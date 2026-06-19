@@ -1,6 +1,7 @@
+import { randomBytes } from "node:crypto";
 import { Router } from "express";
 import bcrypt from "bcryptjs";
-import { eq, and, gte, isNull } from "drizzle-orm";
+import { eq, and, isNull } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   licensesTable,
@@ -16,7 +17,6 @@ const VALID_FEATURES = ["audio", "video", "conference", "transfer", "dtmf"];
 const KEY_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
 function generateLicenseKey(): string {
-  const { randomBytes } = require("crypto") as typeof import("crypto");
   const bytes = randomBytes(32);
   let key = "pk_live_";
   for (const byte of bytes) {

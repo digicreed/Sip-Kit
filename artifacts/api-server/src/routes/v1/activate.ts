@@ -15,7 +15,7 @@ const router = Router();
 
 const REFRESH_TOKEN_TTL_DAYS = parseInt(process.env["REFRESH_TOKEN_TTL_DAYS"] ?? "30");
 
-const activateLimiter = rateLimit({
+const ipLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
   standardHeaders: true,
@@ -23,7 +23,19 @@ const activateLimiter = rateLimit({
   message: { error: "Too many activation attempts, please try again later" },
 });
 
-router.post("/activate", activateLimiter, async (req, res) => {
+const perKeyLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 50,
+  keyGenerator: (req) => {
+    const { licenseKey } = (req as { body?: { licenseKey?: string } }).body ?? {};
+    return licenseKey ? `key:${licenseKey.slice(-16)}` : (req.ip ?? "unknown");
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many activations for this license key, please try again later" },
+});
+
+router.post("/activate", ipLimiter, perKeyLimiter, async (req, res) => {
   const { licenseKey, appId, deviceId } = req.body as {
     licenseKey?: string;
     appId?: string;
