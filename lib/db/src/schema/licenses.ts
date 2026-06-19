@@ -7,6 +7,7 @@ export const licensesTable = pgTable("licenses", {
   id: uuid("id").primaryKey().defaultRandom(),
   providerId: uuid("provider_id").notNull().references(() => providersTable.id),
   keyHash: text("key_hash").notNull(),
+  keyPrefix: text("key_prefix").notNull().default(""),
   features: jsonb("features").$type<string[]>().notNull().default(["audio"]),
   maxAccounts: integer("max_accounts").notNull().default(5),
   maxConcurrentCalls: integer("max_concurrent_calls").notNull().default(10),

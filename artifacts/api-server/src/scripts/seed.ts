@@ -38,6 +38,7 @@ async function main() {
 
   const plainKey = await generateLicenseKey();
   const keyHash = await bcrypt.hash(plainKey, 12);
+  const kp = plainKey.slice(0, 16);
 
   const expiresAt = new Date();
   expiresAt.setFullYear(expiresAt.getFullYear() + 1);
@@ -47,6 +48,7 @@ async function main() {
     .values({
       providerId: provider!.id,
       keyHash,
+      keyPrefix: kp,
       features: ["audio", "video", "conference", "transfer", "dtmf"],
       maxAccounts: 10,
       maxConcurrentCalls: 50,

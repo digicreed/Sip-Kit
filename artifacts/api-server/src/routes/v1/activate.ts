@@ -48,14 +48,21 @@ router.post("/activate", ipLimiter, perKeyLimiter, async (req, res) => {
   }
 
   try {
-    const licenses = await db
+    // Use the key prefix (first 16 chars) for an indexed lookup instead of
+    // a full-table bcrypt scan — avoids the 200-row cap entirely.
+    const prefix = licenseKey.slice(0, 16);
+    const candidates = await db
       .select()
       .from(licensesTable)
-      .where(isNull(licensesTable.revokedAt))
-      .limit(200);
+      .where(
+        and(
+          eq(licensesTable.keyPrefix, prefix),
+          isNull(licensesTable.revokedAt),
+        ),
+      );
 
     let matchedLicense = null;
-    for (const license of licenses) {
+    for (const license of candidates) {
       const match = await bcrypt.compare(licenseKey, license.keyHash);
       if (match) {
         matchedLicense = license;
@@ -113,7 +120,6 @@ router.post("/activate", ipLimiter, perKeyLimiter, async (req, res) => {
       expiresAt: refreshExpiry,
     });
 
-    const entitlementTtl = parseInt(process.env["ENTITLEMENT_TTL_SECONDS"] ?? "86400");
     const entitlementJwt = signEntitlement({
       sub: matchedLicense.providerId,
       appId,
@@ -122,10 +128,11 @@ router.post("/activate", ipLimiter, perKeyLimiter, async (req, res) => {
       maxConcurrentCalls: matchedLicense.maxConcurrentCalls,
     });
 
+    const ttl = parseInt(process.env["ENTITLEMENT_TTL_SECONDS"] ?? "86400");
     res.json({
       entitlement: entitlementJwt,
       refreshToken: rawRefreshToken,
-      expiresIn: entitlementTtl,
+      expiresIn: ttl,
     });
   } catch (err) {
     req.log.error({ err }, "Activation error");

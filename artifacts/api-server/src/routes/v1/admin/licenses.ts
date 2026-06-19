@@ -25,6 +25,11 @@ function generateLicenseKey(): string {
   return key;
 }
 
+/** First 16 chars of the key — stored in plaintext for fast indexed lookup */
+function keyPrefix(key: string): string {
+  return key.slice(0, 16);
+}
+
 router.post("/providers/:providerId/licenses", requireAdminKey, async (req, res) => {
   const { providerId } = req.params;
   const {
@@ -61,6 +66,7 @@ router.post("/providers/:providerId/licenses", requireAdminKey, async (req, res)
       .values({
         providerId: providerId as string,
         keyHash,
+        keyPrefix: keyPrefix(plainKey),
         features: features as string[],
         maxAccounts,
         maxConcurrentCalls,
