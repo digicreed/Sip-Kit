@@ -40,6 +40,46 @@ class SoftphoneState extends ChangeNotifier {
   void _init() {
     _client = SipKitClient(engine: _buildEngine());
     _subscribeClient();
+    // Restore persisted session asynchronously; UI renders immediately with
+    // the unactivated state and updates once restoration completes.
+    _restoreSession();
+  }
+
+  /// Attempts to re-activate using stored credentials and, if activation
+  /// succeeds, re-adds every saved account (registering each one).
+  Future<void> _restoreSession() async {
+    final creds = await loadSavedCredentials();
+    final licenseKey = creds['licenseKey'];
+    final baseUrl = creds['baseUrl'];
+    if (licenseKey == null || baseUrl == null) return;
+
+    try {
+      await activate(licenseKey: licenseKey, baseUrl: baseUrl);
+    } catch (_) {
+      // Silent: if activation fails the UI already shows the activate screen.
+      return;
+    }
+
+    if (activationState != ActivationState.active &&
+        activationState != ActivationState.expired) {
+      return;
+    }
+
+    // Re-add persisted SIP accounts.
+    final configs = await loadSavedAccountConfigs();
+    for (final config in configs) {
+      try {
+        await addAccount(config);
+      } catch (_) {
+        // Skip individual accounts that fail (e.g. entitlement limit changed).
+        _addLog(
+            'Could not restore account ${config.username}@${config.domain}');
+      }
+    }
+    if (configs.isNotEmpty) {
+      _addLog('Session restored — ${configs.length} account(s) reconnected');
+      notifyListeners();
+    }
   }
 
   StreamSubscription<ActivationState>? _activationSub;

@@ -148,8 +148,14 @@ class SipKitClient {
       _applyEntitlement(ent, baseUrl, ActivationState.active);
       await _ensureEngineInit();
       return ent;
+    } on ActivationError {
+      // Server explicitly rejected the key (invalid, revoked, or suspended).
+      // Never fall back to the cache — the server has spoken.
+      _setActivationState(ActivationState.locked);
+      rethrow;
     } catch (e) {
-      // Fall back to grace window on any network failure.
+      // Transient network/IO failure only — fall back to the offline grace
+      // window if a cached entitlement is still within the 72-hour window.
       if (cached != null) {
         final graceState = cached.isExpiredButWithinGrace
             ? ActivationState.expired
