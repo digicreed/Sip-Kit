@@ -84,8 +84,14 @@ class SipKitPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
     override fun onDetachedFromActivity() { activityBinding = null }
 
     // ─── EventChannel.StreamHandler ───────────────────────────────────────
-    override fun onListen(arguments: Any?, events: EventChannel.EventSink?) { eventSink = events }
-    override fun onCancel(arguments: Any?) { eventSink = null }
+    override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+        eventSink = events
+        SipKitEventBus.setSink(events)
+    }
+    override fun onCancel(arguments: Any?) {
+        eventSink = null
+        SipKitEventBus.setSink(null)
+    }
 
     // ─── MethodCallHandler ────────────────────────────────────────────────
     override fun onMethodCall(@NonNull call: MethodCall, @NonNull result: Result) {

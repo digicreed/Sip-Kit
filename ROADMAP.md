@@ -13,33 +13,47 @@
 | Offline grace window (72h, flutter_secure_storage) | ✅ Complete |
 | Auto-refresh (5 min before JWT expiry) | ✅ Complete |
 | Demo softphone (7 screens, engine toggle) | ✅ Complete |
+| APNs VoIP push + FCM cold-start wakeup | ✅ Complete (credentials required) |
 
 ---
 
-## Planned — v0.2
+## v0.2 — APNs / FCM push wakeup (complete)
 
-### APNs / FCM push wakeup for cold-start background calls
+### What was implemented
 
-Currently `PjsipEngine` keeps a VoIP socket alive while the app is in the
-background via an iOS background VoIP socket (`UIBackgroundModes: voip`) and
-an Android foreground service.  This does **not** wake the app when it is
-fully closed (cold start).
+- **`POST /api/v1/push-token`** — stores one APNs or FCM token per activated
+  device (upserts on re-registration).  Protected by the entitlement JWT.
 
-True cold-start wakeup requires:
+- **`artifacts/api-server/src/lib/push-worker.ts`** — server-side fan-out:
+  - `sendApnsPush()` — HTTP/2 request to `api.push.apple.com` using token-based
+    auth (.p8 key), `apns-push-type: voip`, `apns-priority: 10`.
+  - `sendFcmPush()` — FCM HTTP v1 API using a Google service-account JWT.
+  - `fanOutCallPush()` — fetches all tokens for a device and dispatches in parallel.
 
-- **iOS (PushKit / APNs VoIP push):** Server sends a VoIP push notification
-  via APNs when a call arrives.  iOS wakes the app and calls
-  `PKPushRegistryDelegate.pushRegistry(_:didReceiveIncomingPushWith:)`.
-  The app must report the call to CallKit within ~2s or iOS kills it.
-  The `SipKitPlugin.swift` already stubs `PKPushRegistry` setup.
+- **iOS `SipKitPlugin.swift`** — full `PKPushRegistryDelegate` implementation:
+  - `setupVoipPushRegistry()` creates a live `PKPushRegistry` on init.
+  - `pushRegistry(_:didUpdate:for:)` emits a `voipPushToken` event to Flutter
+    so the SDK can POST the token to `/api/v1/push-token`.
+  - `pushRegistry(_:didReceiveIncomingPushWith:completion:)` calls
+    `CXProvider.reportNewIncomingCall` synchronously within the ~2s deadline,
+    then emits `incomingCall` to Flutter.
 
-- **Android (FCM):** Server sends a data-only FCM message.  A `FirebaseMessagingService`
-  starts the PJSIP engine and reports the call to `TelecomManager`.
+- **Android `SipKitFirebaseMessagingService.kt`** — `FirebaseMessagingService`:
+  - `onNewToken` emits a `voipPushToken` event via `SipKitEventBus`.
+  - `onMessageReceived` calls `TelecomManager.addNewIncomingCall`, starts
+    `SipKitForegroundService`, and emits `incomingCall`.
 
-**Design seam:** The licensing backend is the natural place to relay push
-tokens (stored per device) and fan out notifications.  A
-`POST /api/v1/push-token { deviceId, platform, token }` endpoint, plus a
-worker that calls APNs / FCM when PJSIP reports an inbound call.
+- **`SipKitEventBus.kt`** — process-level singleton that queues events emitted
+  by background services before the Flutter engine attaches, then replays them.
+
+- **`AndroidManifest.xml`** — declares `SipKitFirebaseMessagingService` with
+  `com.google.firebase.MESSAGING_EVENT` intent-filter.
+
+See `example_softphone/README.md` → **Step 6** for credential setup.
+
+---
+
+## Planned — v0.3
 
 ---
 

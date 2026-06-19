@@ -20,6 +20,10 @@ import AVFoundation
 //   NSCameraUsageDescription       (video calls)
 //   UIBackgroundModes: [ voip ]
 //   com.apple.developer.networking.voip: YES   (entitlement)
+//
+// Required Entitlement (to receive VoIP pushes):
+//   com.apple.developer.networking.voip: YES
+//   aps-environment: development | production
 // ---------------------------------------------------------------------------
 
 public class SipKitPlugin: NSObject, FlutterPlugin {
@@ -32,6 +36,9 @@ public class SipKitPlugin: NSObject, FlutterPlugin {
     // ─── CallKit ───────────────────────────────────────────────────────────
     private let callKitProvider: CXProvider
     private let callKitController = CXCallController()
+
+    // ─── PushKit ───────────────────────────────────────────────────────────
+    private var pushRegistry: PKPushRegistry?
 
     // ─── State ────────────────────────────────────────────────────────────
     /// Maps accountId → PJSUA2 account ID (int).  Full PJSUA2 integration
@@ -122,8 +129,8 @@ public class SipKitPlugin: NSObject, FlutterPlugin {
     private func handleLifecycle(_ method: String, result: FlutterResult) {
         if method == "init" {
             // PJSUA2: Ep.instance().libCreate() + libInit + libStart
-            // Register VoIP push socket via PKPushRegistry (APNs wakeup stub).
-            setupVoipPushStub()
+            // PKPushRegistry is already set up at app launch
+            // (see application(_:didFinishLaunchingWithOptions:)).
             result(nil)
         } else {
             // PJSUA2: Ep.instance().libDestroy()
@@ -327,13 +334,26 @@ public class SipKitPlugin: NSObject, FlutterPlugin {
         }
     }
 
-    // ─── VoIP push stub (PKPushRegistry) ──────────────────────────────────
-    private func setupVoipPushStub() {
-        // Full APNs push wakeup requires a server-side APNs integration — see ROADMAP.
-        // Stub: register PKPushRegistry so the entitlement is available at runtime.
-        // let registry = PKPushRegistry(queue: .main)
-        // registry.delegate = self
-        // registry.desiredPushTypes = [.voIP]
+    // ─── VoIP push (PKPushRegistry + PKPushRegistryDelegate) ──────────────
+    //
+    // The OS calls pushRegistry(_:didReceiveIncomingPushWith:) when a VoIP
+    // push lands, even when the app is fully terminated.  We MUST call
+    // CXProvider.reportNewIncomingCall before the completion handler returns
+    // (within ~2 seconds), or iOS will terminate the process.
+    //
+    // Payload format sent by the server push-worker:
+    // {
+    //   "aps": { "alert": { "title": "Incoming Call", "body": "<callerName>" } },
+    //   "callId":      "<uuid>",
+    //   "remoteUri":   "sip:alice@example.com",
+    //   "displayName": "Alice",
+    //   "accountId":   "<accountId>"
+    // }
+    private func setupVoipPushRegistry() {
+        let registry = PKPushRegistry(queue: .main)
+        registry.delegate = self
+        registry.desiredPushTypes = [.voIP]
+        pushRegistry = registry
     }
 
     // ─── Event emission ───────────────────────────────────────────────────
@@ -341,6 +361,83 @@ public class SipKitPlugin: NSObject, FlutterPlugin {
         DispatchQueue.main.async { [weak self] in
             self?.eventSink?(event)
         }
+    }
+}
+
+// ─── PKPushRegistryDelegate ───────────────────────────────────────────────────
+extension SipKitPlugin: PKPushRegistryDelegate {
+
+    /// Called when PushKit issues a new device token.
+    /// Upload this token to POST /api/v1/push-token so the server can reach
+    /// this device for cold-start wakeup.
+    public func pushRegistry(
+        _ registry: PKPushRegistry,
+        didUpdate pushCredentials: PKPushCredentials,
+        for type: PKPushType
+    ) {
+        guard type == .voIP else { return }
+        let tokenData = pushCredentials.token
+        let tokenString = tokenData.map { String(format: "%02x", $0) }.joined()
+        emitEvent([
+            "type":     "voipPushToken",
+            "platform": "apns",
+            "token":    tokenString
+        ])
+    }
+
+    /// Called when PushKit receives an incoming VoIP push — even if the app
+    /// is fully terminated.  We MUST call reportNewIncomingCall synchronously
+    /// (before this method returns) or iOS will kill the app.
+    public func pushRegistry(
+        _ registry: PKPushRegistry,
+        didReceiveIncomingPushWith payload: PKPushPayload,
+        for type: PKPushType,
+        completion: @escaping () -> Void
+    ) {
+        guard type == .voIP else {
+            completion()
+            return
+        }
+
+        let dict = payload.dictionaryPayload
+
+        let callId      = dict["callId"]      as? String ?? UUID().uuidString
+        let remoteUri   = dict["remoteUri"]   as? String ?? "sip:unknown@unknown"
+        let displayName = dict["displayName"] as? String ?? remoteUri
+        let accountId   = dict["accountId"]   as? String ?? ""
+
+        let uuid = UUID()
+        callUUIDs[callId] = uuid
+
+        let update = CXCallUpdate()
+        update.remoteHandle    = CXHandle(type: .generic, value: remoteUri)
+        update.localizedCallerName = displayName
+        update.hasVideo        = false
+
+        // Must reach CallKit before completion() or within ~2 s after push delivery.
+        callKitProvider.reportNewIncomingCall(with: uuid, update: update) { [weak self] error in
+            if error == nil {
+                self?.emitEvent([
+                    "type":        "incomingCall",
+                    "callId":      callId,
+                    "accountId":   accountId,
+                    "remoteUri":   remoteUri,
+                    "displayName": displayName,
+                    "hasVideo":    false
+                ])
+                // PJSUA2: At this point start the engine if not running and
+                // answer the auto-SIP dialog when the user taps Accept in CallKit.
+            }
+            completion()
+        }
+    }
+
+    public func pushRegistry(
+        _ registry: PKPushRegistry,
+        didInvalidatePushTokenFor type: PKPushType
+    ) {
+        guard type == .voIP else { return }
+        emitEvent(["type": "voipPushTokenInvalidated", "platform": "apns"])
     }
 }
 
@@ -417,8 +514,15 @@ extension SipKitPlugin: FlutterStreamHandler {
 // ─── FlutterApplicationLifeCycleDelegate ─────────────────────────────────────
 extension SipKitPlugin: FlutterApplicationLifeCycleDelegate {
 
+    /// Register for VoIP push at the earliest possible moment — app launch —
+    /// so a cold-start push can call pushRegistry(_:didReceiveIncomingPushWith:)
+    /// before the Flutter engine finishes initialising.
+    ///
+    /// This is the authoritative place for PKPushRegistry setup; the method-
+    /// channel `init` handler no longer creates the registry (it is already live).
     public func application(_ application: UIApplication,
                             didFinishLaunchingWithOptions launchOptions: [AnyHashable: Any]?) -> Bool {
+        setupVoipPushRegistry()
         return true
     }
 }

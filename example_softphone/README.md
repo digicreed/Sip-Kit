@@ -107,6 +107,128 @@ Switching engine disconnects all accounts and resets activation state.
 
 ---
 
+## Step 6 — APNs VoIP push + FCM cold-start wakeup (optional)
+
+When the app is **fully terminated**, the background socket maintained by
+PjsipEngine cannot receive calls.  APNs (iOS) and FCM (Android) wake the
+process and ring the native call screen before the SIP dialog is answered.
+
+### iOS — APNs VoIP push
+
+**1. Apple Developer portal**
+
+- Enable the **Push Notifications** capability on your App ID.
+- Under *Keys*, create an **APNs Auth Key** (`.p8`) and download it once.
+- Note the **Key ID** (10 chars) and your **Team ID**.
+
+**2. Info.plist — verify background modes**
+
+```xml
+<key>UIBackgroundModes</key>
+<array>
+  <string>voip</string>
+</array>
+```
+
+**3. Entitlements**
+
+```xml
+<key>com.apple.developer.networking.voip</key>
+<true/>
+<key>aps-environment</key>
+<string>development</string>   <!-- or "production" for release -->
+```
+
+**4. Licensing backend environment variables**
+
+Set these secrets in your deployment (or `.env` locally):
+
+| Variable | Value |
+|---|---|
+| `APNS_KEY_ID` | 10-char key ID from Apple portal |
+| `APNS_TEAM_ID` | 10-char Apple Team ID |
+| `APNS_PRIVATE_KEY` | Full contents of the `.p8` file (newlines as `\n`) |
+| `APNS_BUNDLE_ID` | Your app bundle ID, e.g. `com.example.softphone` |
+| `APNS_PRODUCTION` | `true` for App Store builds; omit for sandbox |
+
+**5. Token flow**
+
+When `PjsipEngine` is initialised, `SipKitPlugin` creates a `PKPushRegistry`.
+iOS calls `pushRegistry(_:didUpdate:for:)` with a device token.  The SDK emits
+a `voipPushToken` event; your app should POST it to the backend:
+
+```dart
+sipKit.events.where((e) => e['type'] == 'voipPushToken').listen((e) {
+  sipKit.httpClient.post('/api/v1/push-token', body: {
+    'deviceId': myDeviceId,
+    'platform': e['platform'],   // "apns"
+    'token':    e['token'],
+  });
+});
+```
+
+---
+
+### Android — FCM data messages
+
+**1. Firebase project setup**
+
+- Create a project at [console.firebase.google.com](https://console.firebase.google.com).
+- Register your Android app and download `google-services.json` into `android/app/`.
+- In *Project Settings → Service accounts* generate a new private key (JSON).
+
+**2. `android/build.gradle`** — add at the bottom of the `plugins` block:
+
+```groovy
+id "com.google.gms.google-services" version "4.4.2" apply false
+```
+
+**3. `android/app/build.gradle`** — add the plugin and dependency:
+
+```groovy
+plugins {
+  id "com.google.gms.google-services"
+}
+dependencies {
+  implementation "com.google.firebase:firebase-messaging:24.1.1"
+}
+```
+
+**4. Licensing backend environment variables**
+
+| Variable | Value |
+|---|---|
+| `FCM_PROJECT_ID` | Firebase project ID (from Project Settings) |
+| `FCM_SERVICE_ACCOUNT_JSON` | Full service-account JSON string (from the downloaded key file) |
+
+**5. Token flow**
+
+`SipKitFirebaseMessagingService.onNewToken` emits a `voipPushToken` event (same
+shape as iOS) which your app POSTs to `/api/v1/push-token` with `platform: "fcm"`.
+
+---
+
+### Server — fan out a push when a call arrives
+
+Call `fanOutCallPush` from your PJSIP inbound-call webhook or SIP proxy event:
+
+```typescript
+import { fanOutCallPush } from "./lib/push-worker.js";
+
+await fanOutCallPush(deviceDbId, {
+  callId:      "call_abc123",
+  remoteUri:   "sip:alice@example.com",
+  displayName: "Alice",
+  accountId:   "acc_xyz",
+});
+```
+
+The worker reads all stored tokens for the device and dispatches APNs / FCM in
+parallel.  Missing credentials are a no-op warning — the live SIP socket
+remains the primary delivery path.
+
+---
+
 ## Asterisk WebSocket transport setup
 
 In `pjsip.conf`:

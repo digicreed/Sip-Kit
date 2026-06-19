@@ -10,6 +10,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Required on Android 13+ to post call notifications -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application>
         <!-- ConnectionService for native Android call UI -->
@@ -27,5 +29,27 @@
             android:name=".SipKitForegroundService"
             android:foregroundServiceType="phoneCall"
             android:exported="false" />
+
+        <!--
+            FCM data-message receiver for cold-start VoIP wakeup.
+
+            This service is declared here so it compiles as part of the plugin
+            AAR.  The host app must:
+              1. Add google-services.json to app/
+              2. Apply the google-services Gradle plugin
+              3. Add the Firebase Messaging dependency:
+                 implementation 'com.google.firebase:firebase-messaging:24.x.x'
+
+            The HIGHEST_PRIORITY intent-filter ensures this service intercepts
+            incoming FCM messages before the default Firebase handler, which
+            would show a notification tray entry instead of the call screen.
+        -->
+        <service
+            android:name=".SipKitFirebaseMessagingService"
+            android:exported="false">
+            <intent-filter android:priority="1">
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>

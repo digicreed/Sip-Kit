@@ -3,6 +3,8 @@ import activateRouter from "./activate.js";
 import refreshRouter from "./refresh.js";
 import usageRouter from "./usage.js";
 import publicKeyRouter from "./public-key.js";
+import pushTokenRouter from "./push-token.js";
+import inboundCallRouter from "./inbound-call.js";
 import adminProvidersRouter from "./admin/providers.js";
 import adminLicensesRouter from "./admin/licenses.js";
 import adminSummaryRouter from "./admin/summary.js";
@@ -13,6 +15,8 @@ router.use(activateRouter);
 router.use(refreshRouter);
 router.use(usageRouter);
 router.use(publicKeyRouter);
+router.use(pushTokenRouter);
+router.use(inboundCallRouter);
 
 router.use("/admin", adminProvidersRouter);
 router.use("/admin", adminLicensesRouter);

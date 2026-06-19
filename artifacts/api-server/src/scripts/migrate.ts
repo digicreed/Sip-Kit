@@ -83,6 +83,19 @@ async function migrate() {
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_usage_events_license_id ON usage_events(license_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_usage_events_created_at ON usage_events(created_at)`);
 
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS push_tokens (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      device_id UUID NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+      platform TEXT NOT NULL,
+      token TEXT NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
+
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS push_tokens_device_id_unique ON push_tokens(device_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_push_tokens_device_id ON push_tokens(device_id)`);
+
   console.log("✅ Schema migrations complete.");
   await pool.end();
 }
