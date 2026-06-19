@@ -11,8 +11,9 @@ import '../licensing/entitlement_cache.dart';
 import '../models/account_config.dart';
 import '../models/activation_state.dart';
 import '../models/call_direction.dart';
+import '../models/call_state.dart';
 import '../models/conference.dart';
-import '../models/entitlement.dart' as model;
+import '../models/entitlement.dart';
 import 'sipkit_account.dart';
 import 'sipkit_call.dart';
 
@@ -25,18 +26,16 @@ import 'sipkit_call.dart';
 ///
 /// Quick-start:
 /// ```dart
-/// final client = SipKitClient();                // WebrtcEngine by default
+/// final client = SipKitClient();
 /// await client.activate(
 ///   licenseKey: 'pk_live_xxx',
 ///   baseUrl:    'https://license.mydomain.com',
 ///   appId:      'com.provider.softphone',
 /// );
-///
 /// final account = await client.addAccount(SipKitAccountConfig(
 ///   username: 'alice', password: 'secret', domain: 'pbx.provider.com',
 ///   wsUrl: 'wss://pbx.provider.com:8089/ws',
 /// ));
-///
 /// final call = await client.makeCall(account.id, 'sip:bob@pbx.provider.com');
 /// ```
 class SipKitClient {
@@ -64,9 +63,7 @@ class SipKitClient {
       StreamController<ActivationState>.broadcast();
   ActivationState _activationState = ActivationState.unactivated;
 
-  model.Entitlement? _entitlement;
-  String _currentToken = '';
-  String _currentRefreshToken = '';
+  Entitlement? _entitlement;
   String _currentBaseUrl = '';
   String _currentDeviceId = '';
 
@@ -91,7 +88,7 @@ class SipKitClient {
   ActivationState get currentActivationState => _activationState;
 
   /// The current decoded entitlement, or `null` if not activated.
-  model.Entitlement? get entitlement => _entitlement;
+  Entitlement? get entitlement => _entitlement;
 
   /// All currently registered accounts.
   List<SipKitAccount> get accounts => List.unmodifiable(_accounts.values);
@@ -116,7 +113,7 @@ class SipKitClient {
   ///
   /// Throws [ActivationError] on invalid/revoked/expired keys.
   /// Throws [NetworkError] on unreachable backend.
-  Future<model.Entitlement> activate({
+  Future<Entitlement> activate({
     required String licenseKey,
     required String baseUrl,
     String? appId,
@@ -127,8 +124,7 @@ class SipKitClient {
     // Try offline cache first (supports 72h grace window).
     final cached = await _cache.loadWithGrace();
     if (cached != null && !cached.entitlement.isExpired) {
-      _applyEntitlement(cached.entitlement, cached.token,
-          cached.refreshToken, baseUrl);
+      _applyEntitlement(cached.entitlement, baseUrl);
       await _ensureEngineInit();
       return cached.entitlement;
     }
@@ -147,16 +143,13 @@ class SipKitClient {
         onRefreshed: _onAutoRefresh,
         onExpired: _onAutoRefreshFailed,
       );
-      // After activation, load the freshly cached tokens.
-      final saved = await _cache.loadWithGrace();
-      _applyEntitlement(ent, saved?.token ?? '', saved?.refreshToken ?? '', baseUrl);
+      _applyEntitlement(ent, baseUrl);
       await _ensureEngineInit();
       return ent;
     } catch (e) {
       // Fall back to grace window even on network failure.
       if (cached != null) {
-        _applyEntitlement(cached.entitlement, cached.token,
-            cached.refreshToken, baseUrl);
+        _applyEntitlement(cached.entitlement, baseUrl);
         await _ensureEngineInit();
         return cached.entitlement;
       }
@@ -197,7 +190,8 @@ class SipKitClient {
 
   /// Place an outbound call from [accountId] to [target] (SIP URI or number).
   ///
-  /// Throws [NotEntitledError] if concurrent call limit is reached.
+  /// Throws [NotEntitledError] if concurrent call limit is reached or if
+  /// [video] is requested without the `"video"` feature.
   /// Throws [ActivationError] if not active.
   Future<SipKitCall> makeCall(
     String accountId,
@@ -209,14 +203,12 @@ class SipKitClient {
     _entitlement!.requireCallSlot(_activeCalls);
 
     final callId = await _engine.makeCall(accountId, target, video: video);
-    final call = SipKitCall.create(
+    final call = _buildCall(
       id: callId,
       accountId: accountId,
       remoteUri: target,
       displayName: target,
       direction: CallDirection.outbound,
-      engine: _engine,
-      entitlementToken: _currentToken,
     );
     _calls[callId] = call;
     return call;
@@ -226,6 +218,7 @@ class SipKitClient {
   ///
   /// Throws [ConferenceNotEntitledError] if the `"conference"` feature is not
   /// in the entitlement.
+  /// Throws [ActivationError] if not active.
   Future<SipKitConference> mergeCalls(List<String> callIds) async {
     _requireActive();
     _entitlement!.requireFeature('conference');
@@ -233,9 +226,8 @@ class SipKitClient {
     if (callIds.length < 2) {
       throw ArgumentError('mergeCalls requires at least 2 call IDs.');
     }
-    // Engine-level conference: hold all-but-first then bridge.
-    // In WebrtcEngine this is done via sip_ua's refer/replaces mechanism.
-    // For PjsipEngine, PJSUA2 call_set_transfer_to replaces or AuConf.
+
+    // Put all but the first call on hold.
     for (final id in callIds.skip(1)) {
       await _calls[id]?.hold();
     }
@@ -279,23 +271,19 @@ class SipKitClient {
     _activationStateCtrl.add(state);
   }
 
-  void _applyEntitlement(model.Entitlement ent, String token,
-      String refreshToken, String baseUrl) {
+  void _applyEntitlement(Entitlement ent, String baseUrl) {
     _entitlement = ent;
-    _currentToken = token;
-    _currentRefreshToken = refreshToken;
     _currentBaseUrl = baseUrl;
     _setActivationState(ActivationState.active);
   }
 
-  void _onAutoRefresh(model.Entitlement newEnt) {
+  void _onAutoRefresh(Entitlement newEnt) {
     _entitlement = newEnt;
     // Stays active.
   }
 
   void _onAutoRefreshFailed() {
     _setActivationState(ActivationState.expired);
-    // Give grace window logic a chance; if it also fails, lock.
     _cache.loadWithGrace().then((cached) {
       if (cached == null) {
         _setActivationState(ActivationState.locked);
@@ -312,14 +300,12 @@ class SipKitClient {
 
   void _subscribeEngineEvents() {
     _incomingCallSub = _engine.incomingCall.listen((event) {
-      final call = SipKitCall.create(
+      final call = _buildCall(
         id: event.callId,
         accountId: event.accountId,
         remoteUri: event.remoteUri,
         displayName: event.displayName,
         direction: CallDirection.inbound,
-        engine: _engine,
-        entitlementToken: _currentToken,
       );
       _calls[event.callId] = call;
       _incomingCallCtrl.add(call);
@@ -336,7 +322,42 @@ class SipKitClient {
       _accounts[event.accountId]
           ?.updateStatus(event.status, reason: event.reason);
     });
+
+    // Wire media streams to their SipKitCall instances.
+    _localStreamSub = _engine.localStream.listen((event) {
+      final (callId, stream) = event;
+      _calls[callId]?.attachLocalStream(stream);
+    });
+
+    _remoteStreamSub = _engine.remoteStream.listen((event) {
+      final (callId, stream) = event;
+      _calls[callId]?.attachRemoteStream(stream);
+    });
   }
+
+  SipKitCall _buildCall({
+    required String id,
+    required String accountId,
+    required String remoteUri,
+    required String displayName,
+    required CallDirection direction,
+  }) =>
+      SipKitCall.create(
+        id: id,
+        accountId: accountId,
+        remoteUri: remoteUri,
+        displayName: displayName,
+        direction: direction,
+        engine: _engine,
+        // Live getter — always reflects the current (possibly refreshed) entitlement.
+        getEntitlement: () {
+          if (_entitlement == null) {
+            throw const ActivationError(
+                'SipKit is not activated. Call activate() first.');
+          }
+          return _entitlement!;
+        },
+      );
 
   void _requireActive() {
     if (_activationState != ActivationState.active) {

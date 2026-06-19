@@ -119,8 +119,6 @@ class WebrtcEngine extends SipEngine implements SipUaHelperListener {
     handle.helper.call(target,
         mediaConstraints: mediaConstraints, voiceonly: !video);
 
-    // The actual sip_ua Call is captured in callStateChanged callback.
-    // We pre-register the callId so we can map events.
     _calls[callId] = _CallHandle(callId: callId, accountId: accountId);
     return callId;
   }
@@ -181,7 +179,6 @@ class WebrtcEngine extends SipEngine implements SipUaHelperListener {
 
   @override
   Future<void> enableVideo(String callId, {required bool enabled}) async {
-    // sip_ua: renegotiate with/without video track.
     final sipCall = _calls[callId]?.sipCall;
     if (sipCall == null) return;
     if (enabled) {
@@ -195,62 +192,62 @@ class WebrtcEngine extends SipEngine implements SipUaHelperListener {
 
   @override
   void registrationStateChanged(RegistrationState state) {
+    // Best-effort match: iterate accounts to find one with this helper.
     String? accountId;
     for (final e in _accounts.entries) {
-      // Match by helper instance — each account has its own helper.
       accountId = e.key;
+      break;
     }
     if (accountId == null) return;
 
-    AccountStatus status;
-    switch (state.state) {
-      case RegistrationStateEnum.REGISTERED:
-        status = AccountStatus.registered;
-      case RegistrationStateEnum.UNREGISTERED:
-        status = AccountStatus.unregistered;
-      case RegistrationStateEnum.REGISTRATION_FAILED:
-        status = AccountStatus.failed;
-      default:
-        status = AccountStatus.registering;
+    final AccountStatus status;
+    if (state.state == RegistrationStateEnum.REGISTERED) {
+      status = AccountStatus.registered;
+    } else if (state.state == RegistrationStateEnum.UNREGISTERED) {
+      status = AccountStatus.unregistered;
+    } else if (state.state == RegistrationStateEnum.REGISTRATION_FAILED) {
+      status = AccountStatus.failed;
+    } else {
+      status = AccountStatus.registering;
     }
+
     _accountStatusCtrl.add(AccountStatusEvent(
-        accountId: accountId,
-        status: status,
-        reason: state.cause));
+        accountId: accountId, status: status, reason: state.cause));
   }
 
   @override
   void callStateChanged(Call call, CallState2 state) {
-    // Find the matching internal call handle.
     final callId = _findOrRegisterCall(call);
 
-    CallState mapped;
-    switch (state.state) {
-      case CallStateEnum.PROGRESS:
-        mapped = CallState.earlyMedia;
-      case CallStateEnum.CONFIRMED:
-        mapped = CallState.established;
-      case CallStateEnum.ACCEPTED:
-        mapped = CallState.established;
-      case CallStateEnum.HOLD:
-        mapped = CallState.held;
-      case CallStateEnum.UNHOLD:
-        mapped = CallState.established;
-      case CallStateEnum.ENDED:
-      case CallStateEnum.FAILED:
-        mapped = CallState.terminated;
-        _calls.remove(callId);
-      case CallStateEnum.CALL_INITIATION:
-        mapped = CallState.connecting;
-      case CallStateEnum.MUTED:
-      case CallStateEnum.UNMUTED:
-        return;
-      default:
-        mapped = CallState.connecting;
+    // Skip mute/unmute notifications — they don't change CallState.
+    if (state.state == CallStateEnum.MUTED ||
+        state.state == CallStateEnum.UNMUTED) {
+      return;
     }
+
+    final CallState mapped;
+    if (state.state == CallStateEnum.PROGRESS) {
+      mapped = CallState.earlyMedia;
+    } else if (state.state == CallStateEnum.CONFIRMED ||
+        state.state == CallStateEnum.ACCEPTED) {
+      mapped = CallState.established;
+    } else if (state.state == CallStateEnum.HOLD) {
+      mapped = CallState.held;
+    } else if (state.state == CallStateEnum.UNHOLD) {
+      mapped = CallState.established;
+    } else if (state.state == CallStateEnum.ENDED ||
+        state.state == CallStateEnum.FAILED) {
+      mapped = CallState.terminated;
+      _calls.remove(callId);
+    } else if (state.state == CallStateEnum.CALL_INITIATION) {
+      mapped = CallState.connecting;
+    } else {
+      mapped = CallState.connecting;
+    }
+
     _callStateCtrl.add(CallStateEvent(callId: callId, state: mapped));
 
-    // Stream local/remote media when established.
+    // Emit media streams when the call is established.
     if (state.state == CallStateEnum.CONFIRMED ||
         state.state == CallStateEnum.ACCEPTED) {
       final local = call.localStream;
@@ -275,7 +272,6 @@ class WebrtcEngine extends SipEngine implements SipUaHelperListener {
         remoteUri: event.request?.from?.uri.toString());
 
     String? accountId;
-    // Best-effort: match by finding the helper that fired this callback.
     for (final e in _accounts.entries) {
       accountId = e.key;
       break;

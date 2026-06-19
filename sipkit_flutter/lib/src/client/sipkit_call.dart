@@ -3,15 +3,19 @@ import 'dart:async';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 import '../errors.dart';
+import '../licensing/entitlement.dart';
 import '../models/call_direction.dart';
 import '../models/call_state.dart';
+import '../models/entitlement.dart';
 import '../engine/sip_engine.dart';
 
 /// Represents a single SIP call, inbound or outbound.
 ///
 /// All media-level methods route through the [SipEngine] adapter seam.
-/// Feature gating (video, transfer) is enforced by [SipKitClient] before
-/// these methods are called — [SipKitCall] itself does not re-check entitlements.
+/// Feature gating for call-level operations (video, DTMF, transfer) is
+/// enforced here against the live [Entitlement] — [SipKitClient] also
+/// pre-checks before creating the call, but this guard protects calls that
+/// were established before a subsequent entitlement downgrade.
 class SipKitCall {
   SipKitCall._({
     required this.id,
@@ -20,9 +24,9 @@ class SipKitCall {
     required this.displayName,
     required this.direction,
     required SipEngine engine,
-    required String entitlementToken,
+    required Entitlement Function() getEntitlement,
   })  : _engine = engine,
-        _entitlementToken = entitlementToken,
+        _getEntitlement = getEntitlement,
         _stateCtrl = StreamController<CallState>.broadcast() {
     _currentState = direction == CallDirection.outbound
         ? CallState.connecting
@@ -46,14 +50,17 @@ class SipKitCall {
   final CallDirection direction;
 
   final SipEngine _engine;
-  final String _entitlementToken;
+  final Entitlement Function() _getEntitlement;
   final StreamController<CallState> _stateCtrl;
 
   late CallState _currentState;
 
-  /// Video renderers — populated when a video stream is negotiated.
-  RTCVideoRenderer? localRenderer;
-  RTCVideoRenderer? remoteRenderer;
+  /// Local media stream — populated when the call is established.
+  /// Attach to an [RTCVideoRenderer] for display in the UI.
+  MediaStream? localStream;
+
+  /// Remote media stream — populated once the remote side accepts.
+  MediaStream? remoteStream;
 
   // ─── Public API ────────────────────────────────────────────────────────────
 
@@ -63,8 +70,10 @@ class SipKitCall {
   /// Snapshot of the current [CallState].
   CallState get currentState => _currentState;
 
-  /// Answer an incoming call.  Throws [StateError] if the call is not inbound
-  /// or is not in [CallState.ringing].
+  /// Answer an incoming call.
+  ///
+  /// Throws [StateError] if the call is not inbound or not ringing.
+  /// Throws [NotEntitledError] if [video] is requested but not entitled.
   Future<void> answer({bool video = false}) async {
     if (direction != CallDirection.inbound) {
       throw StateError('Cannot answer an outbound call.');
@@ -72,6 +81,7 @@ class SipKitCall {
     if (_currentState != CallState.ringing) {
       throw StateError('Call is not ringing (state: $_currentState).');
     }
+    if (video) _getEntitlement().requireFeature('video');
     await _engine.answer(id, video: video);
   }
 
@@ -96,26 +106,36 @@ class SipKitCall {
   }
 
   /// Send one or more DTMF digits.
+  ///
+  /// Throws [NotEntitledError] if the `"dtmf"` feature is not entitled.
   void sendDtmf(String digits) {
+    _getEntitlement().requireFeature('dtmf');
     _engine.sendDtmf(id, digits);
   }
 
   /// Blind-transfer this call to [targetUri].
+  ///
+  /// Throws [NotEntitledError] if the `"transfer"` feature is not entitled.
   Future<void> blindTransfer(String targetUri) async {
+    _getEntitlement().requireFeature('transfer');
     await _engine.blindTransfer(id, targetUri);
   }
 
-  /// Attended transfer: connect this call to [otherCall] and drop the local
-  /// leg.
+  /// Attended transfer: connect this call to [otherCall] and drop the local leg.
+  ///
+  /// Throws [NotEntitledError] if the `"transfer"` feature is not entitled.
   Future<void> attendedTransfer(SipKitCall otherCall) async {
+    _getEntitlement().requireFeature('transfer');
     await _engine.attendedTransfer(id, otherCall.id);
   }
 
-  /// Enable or disable the video track.
+  /// Enable or disable the video track on an established call.
   ///
-  /// Throws [NotEntitledError] if the `"video"` feature is not entitled — this
-  /// check is applied by [SipKitClient] before delegating here.
+  /// Throws [NotEntitledError] if [enabled] is `true` and the `"video"`
+  /// feature is not in the current entitlement — checked before the engine
+  /// is called.
   Future<void> enableVideo(bool enabled) async {
+    if (enabled) _getEntitlement().requireFeature('video');
     await _engine.enableVideo(id, enabled: enabled);
   }
 
@@ -130,12 +150,12 @@ class SipKitCall {
     }
   }
 
-  void attachLocalStream(RTCVideoRenderer renderer) {
-    localRenderer = renderer;
+  void attachLocalStream(MediaStream stream) {
+    localStream = stream;
   }
 
-  void attachRemoteStream(RTCVideoRenderer renderer) {
-    remoteRenderer = renderer;
+  void attachRemoteStream(MediaStream stream) {
+    remoteStream = stream;
   }
 
   /// Factory used internally by [SipKitClient].
@@ -146,7 +166,7 @@ class SipKitCall {
     required String displayName,
     required CallDirection direction,
     required SipEngine engine,
-    required String entitlementToken,
+    required Entitlement Function() getEntitlement,
   }) =>
       SipKitCall._(
         id: id,
@@ -155,6 +175,6 @@ class SipKitCall {
         displayName: displayName,
         direction: direction,
         engine: engine,
-        entitlementToken: entitlementToken,
+        getEntitlement: getEntitlement,
       );
 }

@@ -19,6 +19,13 @@ export 'src/models/conference.dart';
 export 'src/models/entitlement.dart';
 export 'src/models/ice_server.dart';
 
+// Licensing — exported so providers can supply a custom public key (pinning)
+// and access the verifier and cache from their own code.
+export 'src/licensing/entitlement.dart' show EntitlementVerifier, EntitlementChecks;
+export 'src/licensing/entitlement_cache.dart'
+    show EntitlementCache, CachedEntitlement;
+export 'src/licensing/activation.dart' show ActivationService;
+
 // Engine seam (public extension point)
 export 'src/engine/sip_engine.dart';
 export 'src/engine/webrtc_engine.dart';

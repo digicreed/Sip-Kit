@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -6,6 +7,7 @@ import 'package:sipkit_flutter/sipkit_flutter.dart';
 
 const _kLicenseKeyStorageKey = 'demo_license_key';
 const _kBaseUrlStorageKey = 'demo_base_url';
+const _kAccountsStorageKey = 'demo_saved_accounts';
 
 /// Central ChangeNotifier that owns a [SipKitClient] and drives all screens.
 class SoftphoneState extends ChangeNotifier {
@@ -104,24 +106,85 @@ class SoftphoneState extends ChangeNotifier {
 
   // ─── Engine toggle ─────────────────────────────────────────────────────────
   Future<void> toggleEngine() async {
-    await _client.dispose();
-    await _activationSub?.cancel();
-    await _incomingCallSub?.cancel();
+    await _disposeClient();
     useWebrtcEngine = !useWebrtcEngine;
     _client = SipKitClient(engine: _buildEngine());
     activationState = ActivationState.unactivated;
     entitlement = null;
     _incomingCallQueue.clear();
     _subscribeClient();
-    _addLog('Engine switched to ${useWebrtcEngine ? "WebrtcEngine" : "PjsipEngine"}');
+    _addLog(
+        'Engine switched to ${useWebrtcEngine ? "WebrtcEngine" : "PjsipEngine"}');
     notifyListeners();
   }
 
   // ─── Accounts ──────────────────────────────────────────────────────────────
+
+  /// Persist a config so it can be restored on next launch.
+  Future<void> saveAccount(SipKitAccountConfig config) async {
+    final existing = await _loadSavedAccountConfigs();
+    final updated = existing
+        .where((c) =>
+            c['username'] != config.username || c['domain'] != config.domain)
+        .toList();
+    updated.add(_configToMap(config));
+    await _storage.write(
+        key: _kAccountsStorageKey, value: jsonEncode(updated));
+  }
+
+  /// Return all account configs that were persisted across sessions.
+  Future<List<SipKitAccountConfig>> loadSavedAccountConfigs() async {
+    return (await _loadSavedAccountConfigs())
+        .map(_configFromMap)
+        .whereType<SipKitAccountConfig>()
+        .toList();
+  }
+
+  Future<List<Map<String, dynamic>>> _loadSavedAccountConfigs() async {
+    final raw = await _storage.read(key: _kAccountsStorageKey);
+    if (raw == null) return [];
+    try {
+      return (jsonDecode(raw) as List)
+          .cast<Map<String, dynamic>>();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  static Map<String, dynamic> _configToMap(SipKitAccountConfig c) => {
+        'username': c.username,
+        'password': c.password,
+        'domain': c.domain,
+        'wsUrl': c.wsUrl,
+        'displayName': c.displayName,
+        'authUsername': c.authUsername,
+        'registerOnAdd': c.registerOnAdd,
+        'registrationExpiry': c.registrationExpiry,
+      };
+
+  static SipKitAccountConfig? _configFromMap(Map<String, dynamic> m) {
+    try {
+      return SipKitAccountConfig(
+        username: m['username'] as String,
+        password: m['password'] as String,
+        domain: m['domain'] as String,
+        wsUrl: m['wsUrl'] as String,
+        displayName: m['displayName'] as String?,
+        authUsername: m['authUsername'] as String?,
+        registerOnAdd: m['registerOnAdd'] as bool? ?? true,
+        registrationExpiry: m['registrationExpiry'] as int? ?? 600,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<SipKitAccount?> addAccount(SipKitAccountConfig config) async {
     try {
       final acc = await _client.addAccount(config);
       _addLog('Account added: ${config.username}@${config.domain}');
+      // Persist config for next launch.
+      await saveAccount(config);
       acc.status.listen((s) {
         _addLog('Account ${acc.id.substring(0, 6)} → $s');
         notifyListeners();
@@ -166,7 +229,8 @@ class SoftphoneState extends ChangeNotifier {
     if (ids.length < 2) return;
     try {
       final conf = await _client.mergeCalls(ids);
-      _addLog('Conference ${conf.id} created with ${conf.callIds.length} calls');
+      _addLog(
+          'Conference ${conf.id} created with ${conf.callIds.length} calls');
       notifyListeners();
     } on ConferenceNotEntitledError catch (e) {
       _addLog('Conference not entitled: ${e.message}');
@@ -181,11 +245,16 @@ class SoftphoneState extends ChangeNotifier {
     notifyListeners();
   }
 
-  @override
-  Future<void> dispose() async {
+  Future<void> _disposeClient() async {
     await _activationSub?.cancel();
     await _incomingCallSub?.cancel();
     await _client.dispose();
+  }
+
+  // Override must be `void` to match ChangeNotifier.dispose().
+  @override
+  void dispose() {
+    _disposeClient(); // fire-and-forget; GC will clean up
     super.dispose();
   }
 }
