@@ -1,11 +1,10 @@
 import { randomBytes } from "node:crypto";
 import { Router } from "express";
 import bcrypt from "bcryptjs";
-import { eq, and, isNull } from "drizzle-orm";
+import { eq, and, isNull, inArray, gte, lte } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   licensesTable,
-  devicesTable,
   usageEventsTable,
   refreshTokensTable,
 } from "@workspace/db/schema";
@@ -25,10 +24,26 @@ function generateLicenseKey(): string {
   return key;
 }
 
-/** First 16 chars of the key — stored in plaintext for fast indexed lookup */
 function keyPrefix(key: string): string {
   return key.slice(0, 16);
 }
+
+router.get("/providers/:providerId/licenses", requireAdminKey, async (req, res) => {
+  const { providerId } = req.params;
+
+  try {
+    const licenses = await db
+      .select()
+      .from(licensesTable)
+      .where(eq(licensesTable.providerId, providerId as string))
+      .orderBy(licensesTable.createdAt);
+
+    res.json(licenses);
+  } catch (err) {
+    req.log.error({ err }, "List licenses error");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
 
 router.post("/providers/:providerId/licenses", requireAdminKey, async (req, res) => {
   const { providerId } = req.params;
@@ -123,7 +138,7 @@ router.post("/licenses/:licenseId/revoke", requireAdminKey, async (req, res) => 
 });
 
 router.get("/usage", requireAdminKey, async (req, res) => {
-  const { providerId } = req.query as { providerId?: string };
+  const { providerId, from, to } = req.query as { providerId?: string; from?: string; to?: string };
 
   try {
     let licenseIds: string[] = [];
@@ -141,13 +156,24 @@ router.get("/usage", requireAdminKey, async (req, res) => {
       }
     }
 
-    const allLicenses = await db.select().from(licensesTable);
-    const allDevices = await db.select().from(devicesTable);
-    const allEvents = await db.select().from(usageEventsTable);
+    // Build where conditions for date range
+    const conditions = [];
+    if (licenseIds.length > 0) {
+      conditions.push(inArray(usageEventsTable.licenseId, licenseIds));
+    }
+    if (from) {
+      conditions.push(gte(usageEventsTable.createdAt, new Date(from)));
+    }
+    if (to) {
+      // Include the full "to" day by setting time to end of day
+      const toDate = new Date(to);
+      toDate.setHours(23, 59, 59, 999);
+      conditions.push(lte(usageEventsTable.createdAt, toDate));
+    }
 
-    const filteredEvents = providerId
-      ? allEvents.filter((e) => licenseIds.includes(e.licenseId))
-      : allEvents;
+    const filteredEvents = conditions.length > 0
+      ? await db.select().from(usageEventsTable).where(and(...conditions))
+      : await db.select().from(usageEventsTable);
 
     const total = filteredEvents.reduce(
       (acc, e) => ({

@@ -10,6 +10,8 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: admin
+    description: Admin management operations
 paths:
   /healthz:
     get:
@@ -24,7 +26,211 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /v1/admin/providers:
+    get:
+      operationId: listProviders
+      tags: [admin]
+      summary: List all providers
+      security:
+        - adminKey: []
+      responses:
+        "200":
+          description: List of providers
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Provider"
+        "401":
+          description: Unauthorized
+    post:
+      operationId: createProvider
+      tags: [admin]
+      summary: Create a new provider
+      security:
+        - adminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProviderInput"
+      responses:
+        "201":
+          description: Provider created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Provider"
+        "400":
+          description: Bad request
+        "401":
+          description: Unauthorized
+
+  /v1/admin/providers/{providerId}:
+    delete:
+      operationId: deleteProvider
+      tags: [admin]
+      summary: Delete a provider
+      security:
+        - adminKey: []
+      parameters:
+        - name: providerId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Provider deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "404":
+          description: Not found
+        "401":
+          description: Unauthorized
+
+  /v1/admin/providers/{providerId}/licenses:
+    get:
+      operationId: listLicenses
+      tags: [admin]
+      summary: List licenses for a provider
+      security:
+        - adminKey: []
+      parameters:
+        - name: providerId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of licenses
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/License"
+        "401":
+          description: Unauthorized
+    post:
+      operationId: issueLicense
+      tags: [admin]
+      summary: Issue a new license key for a provider
+      security:
+        - adminKey: []
+      parameters:
+        - name: providerId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LicenseInput"
+      responses:
+        "201":
+          description: License issued (key shown once)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LicenseIssued"
+        "400":
+          description: Bad request
+        "401":
+          description: Unauthorized
+
+  /v1/admin/licenses/{licenseId}/revoke:
+    post:
+      operationId: revokeLicense
+      tags: [admin]
+      summary: Revoke a license
+      security:
+        - adminKey: []
+      parameters:
+        - name: licenseId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: License revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RevokeResponse"
+        "404":
+          description: License not found or already revoked
+        "401":
+          description: Unauthorized
+
+  /v1/admin/usage:
+    get:
+      operationId: getUsage
+      tags: [admin]
+      summary: Get usage statistics
+      security:
+        - adminKey: []
+      parameters:
+        - name: providerId
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: from
+          in: query
+          required: false
+          description: Start of date range (ISO 8601)
+          schema:
+            type: string
+        - name: to
+          in: query
+          required: false
+          description: End of date range (ISO 8601)
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Usage statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UsageReport"
+        "401":
+          description: Unauthorized
+
+  /v1/admin/summary:
+    get:
+      operationId: getAdminSummary
+      tags: [admin]
+      summary: Get dashboard summary totals
+      security:
+        - adminKey: []
+      responses:
+        "200":
+          description: Summary dashboard stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminSummary"
+        "401":
+          description: Unauthorized
+
 components:
+  securitySchemes:
+    adminKey:
+      type: http
+      scheme: bearer
+
   schemas:
     HealthStatus:
       type: object
@@ -34,3 +240,210 @@ components:
       required:
         - status
 
+    OkResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+      required:
+        - ok
+
+    Provider:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        contactEmail:
+          type: string
+        createdAt:
+          type: ["string", "null"]
+      required:
+        - id
+        - name
+        - contactEmail
+
+    ProviderInput:
+      type: object
+      properties:
+        name:
+          type: string
+        contactEmail:
+          type: string
+      required:
+        - name
+        - contactEmail
+
+    License:
+      type: object
+      properties:
+        id:
+          type: string
+        providerId:
+          type: string
+        keyPrefix:
+          type: string
+        features:
+          type: array
+          items:
+            type: string
+        maxAccounts:
+          type: integer
+        maxConcurrentCalls:
+          type: integer
+        maxDevices:
+          type: integer
+        expiresAt:
+          type: ["string", "null"]
+        revokedAt:
+          type: ["string", "null"]
+        createdAt:
+          type: ["string", "null"]
+      required:
+        - id
+        - providerId
+        - keyPrefix
+        - features
+        - maxAccounts
+        - maxConcurrentCalls
+        - maxDevices
+
+    LicenseInput:
+      type: object
+      properties:
+        features:
+          type: array
+          items:
+            type: string
+        maxAccounts:
+          type: integer
+        maxConcurrentCalls:
+          type: integer
+        maxDevices:
+          type: integer
+        expiresAt:
+          type: ["string", "null"]
+
+    LicenseIssued:
+      type: object
+      properties:
+        id:
+          type: string
+        providerId:
+          type: string
+        licenseKey:
+          type: string
+        features:
+          type: array
+          items:
+            type: string
+        maxAccounts:
+          type: integer
+        maxConcurrentCalls:
+          type: integer
+        maxDevices:
+          type: integer
+        expiresAt:
+          type: ["string", "null"]
+        createdAt:
+          type: ["string", "null"]
+        _warning:
+          type: string
+      required:
+        - id
+        - providerId
+        - licenseKey
+        - features
+        - maxAccounts
+        - maxConcurrentCalls
+        - maxDevices
+
+    RevokeResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        revokedAt:
+          type: string
+      required:
+        - ok
+        - revokedAt
+
+    UsageEvent:
+      type: object
+      properties:
+        id:
+          type: string
+        licenseId:
+          type: string
+        deviceId:
+          type: string
+        callMinutes:
+          type: integer
+        registrations:
+          type: integer
+        callsPlaced:
+          type: integer
+        createdAt:
+          type: ["string", "null"]
+      required:
+        - id
+        - licenseId
+        - deviceId
+        - callMinutes
+        - registrations
+        - callsPlaced
+
+    UsageTotals:
+      type: object
+      properties:
+        callMinutes:
+          type: integer
+        registrations:
+          type: integer
+        callsPlaced:
+          type: integer
+      required:
+        - callMinutes
+        - registrations
+        - callsPlaced
+
+    UsageReport:
+      type: object
+      properties:
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/UsageEvent"
+        total:
+          $ref: "#/components/schemas/UsageTotals"
+      required:
+        - events
+        - total
+
+    AdminSummary:
+      type: object
+      properties:
+        totalProviders:
+          type: integer
+        totalLicenses:
+          type: integer
+        activeLicenses:
+          type: integer
+        revokedLicenses:
+          type: integer
+        totalCallMinutes:
+          type: integer
+        totalRegistrations:
+          type: integer
+        totalCallsPlaced:
+          type: integer
+      required:
+        - totalProviders
+        - totalLicenses
+        - activeLicenses
+        - revokedLicenses
+        - totalCallMinutes
+        - totalRegistrations
+        - totalCallsPlaced
