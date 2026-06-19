@@ -190,61 +190,44 @@ class PjsipEngine extends SipEngine {
     final event = Map<String, dynamic>.from(raw);
     final type = event['type'] as String?;
 
-    switch (type) {
-      case 'accountStatus':
-        final status = _parseAccountStatus(event['status'] as String? ?? '');
-        _accountStatusCtrl.add(AccountStatusEvent(
-          accountId: event['accountId'] as String? ?? '',
-          status: status,
-          reason: event['reason'] as String?,
-        ));
-
-      case 'callState':
-        final state = _parseCallState(event['state'] as String? ?? '');
-        _callStateCtrl.add(CallStateEvent(
-          callId: event['callId'] as String? ?? '',
-          state: state,
-          reason: event['reason'] as String?,
-        ));
-
-      case 'incomingCall':
-        _incomingCallCtrl.add(IncomingCallEvent(
-          callId: event['callId'] as String? ?? '',
-          accountId: event['accountId'] as String? ?? '',
-          remoteUri: event['remoteUri'] as String? ?? '',
-          displayName: event['displayName'] as String? ?? '',
-          hasVideo: event['hasVideo'] as bool? ?? false,
-        ));
+    if (type == 'accountStatus') {
+      final status = _parseAccountStatus(event['status'] as String? ?? '');
+      _accountStatusCtrl.add(AccountStatusEvent(
+        accountId: event['accountId'] as String? ?? '',
+        status: status,
+        reason: event['reason'] as String?,
+      ));
+    } else if (type == 'callState') {
+      final state = _parseCallState(event['state'] as String? ?? '');
+      _callStateCtrl.add(CallStateEvent(
+        callId: event['callId'] as String? ?? '',
+        state: state,
+        reason: event['reason'] as String?,
+      ));
+    } else if (type == 'incomingCall') {
+      _incomingCallCtrl.add(IncomingCallEvent(
+        callId: event['callId'] as String? ?? '',
+        accountId: event['accountId'] as String? ?? '',
+        remoteUri: event['remoteUri'] as String? ?? '',
+        displayName: event['displayName'] as String? ?? '',
+        hasVideo: event['hasVideo'] as bool? ?? false,
+      ));
     }
   }
 
   static AccountStatus _parseAccountStatus(String s) {
-    switch (s) {
-      case 'registered':
-        return AccountStatus.registered;
-      case 'unregistered':
-        return AccountStatus.unregistered;
-      case 'registering':
-        return AccountStatus.registering;
-      default:
-        return AccountStatus.failed;
-    }
+    if (s == 'registered') return AccountStatus.registered;
+    if (s == 'unregistered') return AccountStatus.unregistered;
+    if (s == 'registering') return AccountStatus.registering;
+    return AccountStatus.failed;
   }
 
   static CallState _parseCallState(String s) {
-    switch (s) {
-      case 'connecting':
-        return CallState.connecting;
-      case 'ringing':
-        return CallState.ringing;
-      case 'earlyMedia':
-        return CallState.earlyMedia;
-      case 'established':
-        return CallState.established;
-      case 'held':
-        return CallState.held;
-      default:
-        return CallState.terminated;
-    }
+    if (s == 'connecting') return CallState.connecting;
+    if (s == 'ringing') return CallState.ringing;
+    if (s == 'earlyMedia') return CallState.earlyMedia;
+    if (s == 'established') return CallState.established;
+    if (s == 'held') return CallState.held;
+    return CallState.terminated;
   }
 }

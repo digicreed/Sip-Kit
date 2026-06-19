@@ -20,9 +20,16 @@ import 'sipkit_call.dart';
 /// Top-level SipKit manager.
 ///
 /// All SIP operations (account registration, outbound calls) are gated behind
-/// a valid entitlement JWT issued by the SipKit licensing backend.  If
-/// [activate] has not been called — or the entitlement has expired and the
-/// offline grace window has elapsed — every SIP method throws [ActivationError].
+/// a valid entitlement JWT issued by the SipKit licensing backend.
+///
+/// Activation state lifecycle:
+/// ```
+/// unactivated → activating → active → expired (grace) → locked
+/// ```
+///
+/// During [ActivationState.expired] the SDK is still functional — the offline
+/// grace window (default 72 h) keeps SIP operations alive while a background
+/// refresh is attempted.  Only [ActivationState.locked] blocks SIP.
 ///
 /// Quick-start:
 /// ```dart
@@ -121,18 +128,13 @@ class SipKitClient {
   }) async {
     _setActivationState(ActivationState.activating);
 
-    // Try offline cache first (supports 72h grace window).
-    final cached = await _cache.loadWithGrace();
-    if (cached != null && !cached.entitlement.isExpired) {
-      _applyEntitlement(cached.entitlement, baseUrl);
-      await _ensureEngineInit();
-      return cached.entitlement;
-    }
-
     final resolvedAppId = appId ?? 'unknown';
     final resolvedDeviceId = deviceId ?? _generateDeviceId();
     _currentDeviceId = resolvedDeviceId;
     _currentBaseUrl = baseUrl;
+
+    // Try offline cache first (supports 72h grace window).
+    final cached = await _cache.loadWithGrace();
 
     try {
       final ent = await _activationService.activate(
@@ -143,13 +145,16 @@ class SipKitClient {
         onRefreshed: _onAutoRefresh,
         onExpired: _onAutoRefreshFailed,
       );
-      _applyEntitlement(ent, baseUrl);
+      _applyEntitlement(ent, baseUrl, ActivationState.active);
       await _ensureEngineInit();
       return ent;
     } catch (e) {
-      // Fall back to grace window even on network failure.
+      // Fall back to grace window on any network failure.
       if (cached != null) {
-        _applyEntitlement(cached.entitlement, baseUrl);
+        final graceState = cached.isExpiredButWithinGrace
+            ? ActivationState.expired
+            : ActivationState.active;
+        _applyEntitlement(cached.entitlement, baseUrl, graceState);
         await _ensureEngineInit();
         return cached.entitlement;
       }
@@ -163,13 +168,14 @@ class SipKitClient {
   /// Add and optionally register a SIP account.
   ///
   /// Throws [NotEntitledError] if [Entitlement.maxAccounts] would be exceeded.
-  /// Throws [ActivationError] if the SDK is not active.
+  /// Throws [ActivationError] if the SDK is locked (not active or in grace).
   Future<SipKitAccount> addAccount(SipKitAccountConfig config) async {
-    _requireActive();
+    _requireNotLocked();
     _entitlement!.requireAccountSlot(_accounts.length);
 
     final id = _generateId('acc');
-    final account = SipKitAccount.create(id: id, config: config, engine: _engine);
+    final account =
+        SipKitAccount.create(id: id, config: config, engine: _engine);
     _accounts[id] = account;
 
     if (config.registerOnAdd) {
@@ -192,13 +198,13 @@ class SipKitClient {
   ///
   /// Throws [NotEntitledError] if concurrent call limit is reached or if
   /// [video] is requested without the `"video"` feature.
-  /// Throws [ActivationError] if not active.
+  /// Throws [ActivationError] if the SDK is locked.
   Future<SipKitCall> makeCall(
     String accountId,
     String target, {
     bool video = false,
   }) async {
-    _requireActive();
+    _requireNotLocked();
     if (video) _entitlement!.requireFeature('video');
     _entitlement!.requireCallSlot(_activeCalls);
 
@@ -218,24 +224,17 @@ class SipKitClient {
   ///
   /// Throws [ConferenceNotEntitledError] if the `"conference"` feature is not
   /// in the entitlement.
-  /// Throws [ActivationError] if not active.
   Future<SipKitConference> mergeCalls(List<String> callIds) async {
-    _requireActive();
+    _requireNotLocked();
     _entitlement!.requireFeature('conference');
 
     if (callIds.length < 2) {
       throw ArgumentError('mergeCalls requires at least 2 call IDs.');
     }
-
-    // Put all but the first call on hold.
     for (final id in callIds.skip(1)) {
       await _calls[id]?.hold();
     }
-
-    return SipKitConference(
-      id: _generateId('conf'),
-      callIds: callIds,
-    );
+    return SipKitConference(id: _generateId('conf'), callIds: callIds);
   }
 
   // ─── Dispose ───────────────────────────────────────────────────────────────
@@ -271,21 +270,24 @@ class SipKitClient {
     _activationStateCtrl.add(state);
   }
 
-  void _applyEntitlement(Entitlement ent, String baseUrl) {
+  void _applyEntitlement(
+      Entitlement ent, String baseUrl, ActivationState state) {
     _entitlement = ent;
     _currentBaseUrl = baseUrl;
-    _setActivationState(ActivationState.active);
+    _setActivationState(state);
   }
 
   void _onAutoRefresh(Entitlement newEnt) {
     _entitlement = newEnt;
-    // Stays active.
+    _setActivationState(ActivationState.active);
   }
 
   void _onAutoRefreshFailed() {
+    // Transition to `expired` — SIP keeps working through the grace window.
+    // Only when loadWithGrace() returns null do we move to `locked`.
     _setActivationState(ActivationState.expired);
     _cache.loadWithGrace().then((cached) {
-      if (cached == null) {
+      if (cached == null && _activationState == ActivationState.expired) {
         _setActivationState(ActivationState.locked);
       }
     });
@@ -323,7 +325,7 @@ class SipKitClient {
           ?.updateStatus(event.status, reason: event.reason);
     });
 
-    // Wire media streams to their SipKitCall instances.
+    // Wire media streams → SipKitCall renderers.
     _localStreamSub = _engine.localStream.listen((event) {
       final (callId, stream) = event;
       _calls[callId]?.attachLocalStream(stream);
@@ -349,7 +351,7 @@ class SipKitClient {
         displayName: displayName,
         direction: direction,
         engine: _engine,
-        // Live getter — always reflects the current (possibly refreshed) entitlement.
+        // Live getter — reflects the current (possibly refreshed) entitlement.
         getEntitlement: () {
           if (_entitlement == null) {
             throw const ActivationError(
@@ -359,11 +361,22 @@ class SipKitClient {
         },
       );
 
-  void _requireActive() {
-    if (_activationState != ActivationState.active) {
+  /// Blocks if [ActivationState.locked]; permits [active] and [expired] (grace).
+  void _requireNotLocked() {
+    if (_activationState == ActivationState.locked) {
+      throw const ActivationError(
+          'SipKit is locked — the entitlement has expired beyond the grace window. '
+          'Call activate() again to reactivate.');
+    }
+    if (_activationState == ActivationState.unactivated ||
+        _activationState == ActivationState.activating) {
       throw ActivationError(
-          'SipKit is not activated (state: $_activationState). '
+          'SipKit is not yet activated (state: $_activationState). '
           'Call activate() first.');
+    }
+    if (_entitlement == null) {
+      throw const ActivationError(
+          'No entitlement loaded. Call activate() first.');
     }
   }
 

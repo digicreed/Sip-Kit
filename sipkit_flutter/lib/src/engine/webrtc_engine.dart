@@ -15,15 +15,17 @@ import 'sip_engine.dart';
 /// the foreground.  No native code is required.  For background calling,
 /// CallKit (iOS) or ConnectionService (Android), use [PjsipEngine] instead.
 ///
-/// Internal [sip_ua] types ([SIPUAHelper], [Call], [RegistrationState]) do
-/// **not** leak through the [SipEngine] interface or the public SipKit API.
-class WebrtcEngine extends SipEngine implements SipUaHelperListener {
-  // One SIPUAHelper per registered account to support multi-account.
+/// Each SIP account is backed by its own [SIPUAHelper] + dedicated
+/// [_AccountListener] so that registration-state and call-state events can
+/// be reliably mapped to the correct accountId even in multi-account setups.
+class WebrtcEngine extends SipEngine {
   final Map<String, _AccountHandle> _accounts = {};
   final Map<String, _CallHandle> _calls = {};
 
-  final _incomingCallCtrl = StreamController<IncomingCallEvent>.broadcast();
-  final _callStateCtrl = StreamController<CallStateEvent>.broadcast();
+  final _incomingCallCtrl =
+      StreamController<IncomingCallEvent>.broadcast();
+  final _callStateCtrl =
+      StreamController<CallStateEvent>.broadcast();
   final _accountStatusCtrl =
       StreamController<AccountStatusEvent>.broadcast();
   final _localStreamCtrl =
@@ -68,10 +70,11 @@ class WebrtcEngine extends SipEngine implements SipUaHelperListener {
   Future<void> registerAccount(
       String accountId, SipKitAccountConfig config) async {
     final helper = SIPUAHelper();
-    final handle = _AccountHandle(accountId: accountId, helper: helper);
-    _accounts[accountId] = handle;
-
-    helper.addSipUaHelperListener(this);
+    // Per-account listener: events carry the correct accountId.
+    final listener = _AccountListener(accountId: accountId, engine: this);
+    _accounts[accountId] = _AccountHandle(
+        accountId: accountId, helper: helper, listener: listener);
+    helper.addSipUaHelperListener(listener);
 
     final settings = UaSettings()
       ..webSocketUrl = config.wsUrl
@@ -110,27 +113,28 @@ class WebrtcEngine extends SipEngine implements SipUaHelperListener {
     final handle = _accounts[accountId];
     if (handle == null) throw StateError('Account $accountId not registered');
 
+    // Reserve the call ID before calling — the CALL_INITIATION event will
+    // arrive synchronously or shortly after and must use this same ID.
     final callId = _generateCallId();
+    handle.pendingOutboundCallId = callId;
+    _calls[callId] = _CallHandle(callId: callId, accountId: accountId);
+
     final mediaConstraints = <String, dynamic>{
       'audio': true,
       'video': video,
     };
-
     handle.helper.call(target,
         mediaConstraints: mediaConstraints, voiceonly: !video);
-
-    _calls[callId] = _CallHandle(callId: callId, accountId: accountId);
     return callId;
   }
 
   @override
   Future<void> answer(String callId, {bool video = false}) async {
-    final call = _calls[callId]?.sipCall;
-    if (call == null) return;
-    final options = <String, dynamic>{
-      'mediaConstraints': {'audio': true, 'video': video}
-    };
-    call.answer(options);
+    final sipCall = _calls[callId]?.sipCall;
+    if (sipCall == null) return;
+    sipCall.answer(<String, dynamic>{
+      'mediaConstraints': {'audio': true, 'video': video},
+    });
   }
 
   @override
@@ -188,18 +192,9 @@ class WebrtcEngine extends SipEngine implements SipUaHelperListener {
     }
   }
 
-  // ─── SipUaHelperListener ───────────────────────────────────────────────────
+  // ─── Per-account callbacks (called from _AccountListener) ─────────────────
 
-  @override
-  void registrationStateChanged(RegistrationState state) {
-    // Best-effort match: iterate accounts to find one with this helper.
-    String? accountId;
-    for (final e in _accounts.entries) {
-      accountId = e.key;
-      break;
-    }
-    if (accountId == null) return;
-
+  void _onRegistrationState(String accountId, RegistrationState state) {
     final AccountStatus status;
     if (state.state == RegistrationStateEnum.REGISTERED) {
       status = AccountStatus.registered;
@@ -210,20 +205,19 @@ class WebrtcEngine extends SipEngine implements SipUaHelperListener {
     } else {
       status = AccountStatus.registering;
     }
-
     _accountStatusCtrl.add(AccountStatusEvent(
         accountId: accountId, status: status, reason: state.cause));
   }
 
-  @override
-  void callStateChanged(Call call, CallState2 state) {
-    final callId = _findOrRegisterCall(call);
-
-    // Skip mute/unmute notifications — they don't change CallState.
+  void _onCallState(String accountId, Call call, CallState2 state) {
+    // Skip mute/unmute events — they don't change SipKit CallState.
     if (state.state == CallStateEnum.MUTED ||
         state.state == CallStateEnum.UNMUTED) {
       return;
     }
+
+    // Resolve call ID: existing → pending outbound → new inbound ID.
+    final String callId = _resolveCallId(accountId, call, state);
 
     final CallState mapped;
     if (state.state == CallStateEnum.PROGRESS) {
@@ -238,7 +232,6 @@ class WebrtcEngine extends SipEngine implements SipUaHelperListener {
     } else if (state.state == CallStateEnum.ENDED ||
         state.state == CallStateEnum.FAILED) {
       mapped = CallState.terminated;
-      _calls.remove(callId);
     } else if (state.state == CallStateEnum.CALL_INITIATION) {
       mapped = CallState.connecting;
     } else {
@@ -247,7 +240,11 @@ class WebrtcEngine extends SipEngine implements SipUaHelperListener {
 
     _callStateCtrl.add(CallStateEvent(callId: callId, state: mapped));
 
-    // Emit media streams when the call is established.
+    if (mapped == CallState.terminated) {
+      _calls.remove(callId);
+    }
+
+    // Emit media streams once the call is established.
     if (state.state == CallStateEnum.CONFIRMED ||
         state.state == CallStateEnum.ACCEPTED) {
       final local = call.localStream;
@@ -257,6 +254,74 @@ class WebrtcEngine extends SipEngine implements SipUaHelperListener {
     }
   }
 
+  void _onIncomingCall(String accountId, IncomingCall event) {
+    final call = event.call;
+    if (call == null) return;
+
+    // Inbound calls always get a fresh ID.
+    final callId = _generateCallId();
+    _calls[callId] = _CallHandle(callId: callId, accountId: accountId)
+      ..sipCall = call;
+
+    _incomingCallCtrl.add(IncomingCallEvent(
+      callId: callId,
+      accountId: accountId,
+      remoteUri: event.request?.from?.uri.toString() ?? '',
+      displayName: event.request?.from?.display_name ?? '',
+    ));
+  }
+
+  // ─── Helpers ───────────────────────────────────────────────────────────────
+
+  /// Find an existing call handle for [call], or claim the pending outbound
+  /// slot, or allocate a new ID for an unexpected inbound event.
+  String _resolveCallId(String accountId, Call call, CallState2 state) {
+    // Check if we already track this Call object.
+    for (final entry in _calls.entries) {
+      if (entry.value.sipCall == call) return entry.key;
+    }
+
+    // First CALL_INITIATION for outbound: claim the pending slot.
+    if (state.state == CallStateEnum.CALL_INITIATION) {
+      final handle = _accounts[accountId];
+      final pendingId = handle?.pendingOutboundCallId;
+      if (pendingId != null) {
+        handle!.pendingOutboundCallId = null;
+        _calls[pendingId]!.sipCall = call;
+        return pendingId;
+      }
+    }
+
+    // Fallback: allocate a new ID.
+    final id = _generateCallId();
+    _calls[id] = _CallHandle(callId: id, accountId: accountId)..sipCall = call;
+    return id;
+  }
+
+  static String _generateCallId() =>
+      'call_${DateTime.now().millisecondsSinceEpoch}_${Random().nextInt(9999)}';
+}
+
+// ─── Per-account SipUaHelperListener ─────────────────────────────────────────
+
+class _AccountListener implements SipUaHelperListener {
+  _AccountListener({required this.accountId, required this.engine});
+
+  final String accountId;
+  final WebrtcEngine engine;
+
+  @override
+  void registrationStateChanged(RegistrationState state) =>
+      engine._onRegistrationState(accountId, state);
+
+  @override
+  void callStateChanged(Call call, CallState2 state) =>
+      engine._onCallState(accountId, call, state);
+
+  @override
+  void incomingCall(IncomingCall event) =>
+      engine._onIncomingCall(accountId, event);
+
   @override
   void onNewMessage(SIPMessageRequest msg) {}
 
@@ -265,49 +330,26 @@ class WebrtcEngine extends SipEngine implements SipUaHelperListener {
 
   @override
   void transportStateChanged(TransportState state) {}
-
-  @override
-  void incomingCall(IncomingCall event) {
-    final callId = _findOrRegisterCall(event.call!,
-        remoteUri: event.request?.from?.uri.toString());
-
-    String? accountId;
-    for (final e in _accounts.entries) {
-      accountId = e.key;
-      break;
-    }
-
-    _incomingCallCtrl.add(IncomingCallEvent(
-      callId: callId,
-      accountId: accountId ?? '',
-      remoteUri: event.request?.from?.uri.toString() ?? '',
-      displayName: event.request?.from?.display_name ?? '',
-    ));
-  }
-
-  // ─── Helpers ───────────────────────────────────────────────────────────────
-
-  String _findOrRegisterCall(Call call, {String? remoteUri}) {
-    for (final e in _calls.entries) {
-      if (e.value.sipCall == call) return e.key;
-    }
-    final id = _generateCallId();
-    _calls[id] = _CallHandle(callId: id, accountId: '')..sipCall = call;
-    return id;
-  }
-
-  static String _generateCallId() =>
-      'call_${DateTime.now().millisecondsSinceEpoch}_${Random().nextInt(9999)}';
 }
 
+// ─── Data holders ─────────────────────────────────────────────────────────────
+
 class _AccountHandle {
-  _AccountHandle({required this.accountId, required this.helper});
+  _AccountHandle({
+    required this.accountId,
+    required this.helper,
+    required this.listener,
+  });
+
   final String accountId;
   final SIPUAHelper helper;
+  final _AccountListener listener;
+  String? pendingOutboundCallId;
 }
 
 class _CallHandle {
   _CallHandle({required this.callId, required this.accountId});
+
   final String callId;
   final String accountId;
   Call? sipCall;

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:provider/provider.dart';
@@ -56,18 +58,22 @@ class _CallCardState extends State<_CallCard> {
     }
     try {
       await widget.call.enableVideo(!_videoEnabled);
-      setState(() { _videoEnabled = !_videoEnabled; _error = null; });
+      if (mounted) setState(() { _videoEnabled = !_videoEnabled; _error = null; });
     } on NotEntitledError catch (e) {
-      setState(() => _error = e.message);
+      if (mounted) setState(() => _error = e.message);
     }
   }
 
   Future<void> _blindTransfer() async {
     final target = _transferCtrl.text.trim();
     if (target.isEmpty) return;
-    await widget.call.blindTransfer(target);
-    _transferCtrl.clear();
-    if (mounted) Navigator.of(context).pop();
+    try {
+      await widget.call.blindTransfer(target);
+      _transferCtrl.clear();
+      if (mounted) Navigator.of(context).pop();
+    } on NotEntitledError catch (e) {
+      if (mounted) setState(() => _error = e.message);
+    }
   }
 
   void _showTransferDialog() {
@@ -115,20 +121,23 @@ class _CallCardState extends State<_CallCard> {
                 Row(children: [
                   CircleAvatar(
                     backgroundColor: _stateColor(state).withOpacity(0.15),
-                    child: Icon(_dirIcon(call.direction),
-                        color: _stateColor(state)),
+                    child:
+                        Icon(_dirIcon(call.direction), color: _stateColor(state)),
                   ),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(call.displayName.isNotEmpty
-                            ? call.displayName
-                            : call.remoteUri,
-                            style: const TextStyle(fontWeight: FontWeight.bold)),
+                        Text(
+                          call.displayName.isNotEmpty
+                              ? call.displayName
+                              : call.remoteUri,
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
                         Text(call.remoteUri,
-                            style: const TextStyle(fontSize: 11, color: Colors.grey),
+                            style: const TextStyle(
+                                fontSize: 11, color: Colors.grey),
                             overflow: TextOverflow.ellipsis),
                       ],
                     ),
@@ -139,7 +148,8 @@ class _CallCardState extends State<_CallCard> {
                   Padding(
                     padding: const EdgeInsets.only(top: 6),
                     child: Text(_error!,
-                        style: const TextStyle(color: Colors.red, fontSize: 12)),
+                        style: const TextStyle(
+                            color: Colors.red, fontSize: 12)),
                   ),
                 const SizedBox(height: 12),
                 // Video tiles (when video enabled)
@@ -189,7 +199,9 @@ class _CallCardState extends State<_CallCard> {
                         onPressed: _showTransferDialog,
                       ),
                     _ActionButton(
-                      icon: _videoEnabled ? Icons.videocam_off : Icons.videocam,
+                      icon: _videoEnabled
+                          ? Icons.videocam_off
+                          : Icons.videocam,
                       label: _videoEnabled ? 'Stop Video' : 'Video',
                       onPressed: _toggleVideo,
                     ),
@@ -201,8 +213,12 @@ class _CallCardState extends State<_CallCard> {
                   _InlineDtmf(
                     ctrl: _dtmfCtrl,
                     onDigit: (d) {
-                      call.sendDtmf(d);
-                      _dtmfCtrl.text += d;
+                      try {
+                        call.sendDtmf(d);
+                        _dtmfCtrl.text += d;
+                      } on NotEntitledError catch (e) {
+                        setState(() => _error = e.message);
+                      }
                     },
                   ),
                 ],
@@ -215,13 +231,11 @@ class _CallCardState extends State<_CallCard> {
   }
 
   Color _stateColor(CallState s) {
-    switch (s) {
-      case CallState.established: return Colors.green;
-      case CallState.ringing: return Colors.orange;
-      case CallState.held: return Colors.blue;
-      case CallState.terminated: return Colors.grey;
-      default: return Colors.indigo;
-    }
+    if (s == CallState.established) return Colors.green;
+    if (s == CallState.ringing) return Colors.orange;
+    if (s == CallState.held) return Colors.blue;
+    if (s == CallState.terminated) return Colors.grey;
+    return Colors.indigo;
   }
 
   IconData _dirIcon(CallDirection d) =>
@@ -234,6 +248,109 @@ class _CallCardState extends State<_CallCard> {
     super.dispose();
   }
 }
+
+// ─── Video tiles (StatefulWidget to manage RTCVideoRenderer lifecycle) ────────
+
+class _VideoTiles extends StatefulWidget {
+  const _VideoTiles({required this.call});
+  final SipKitCall call;
+
+  @override
+  State<_VideoTiles> createState() => _VideoTilesState();
+}
+
+class _VideoTilesState extends State<_VideoTiles> {
+  RTCVideoRenderer? _localRenderer;
+  RTCVideoRenderer? _remoteRenderer;
+  StreamSubscription<(String, dynamic)>? _localSub;
+  StreamSubscription<(String, dynamic)>? _remoteSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _initRenderers();
+  }
+
+  Future<void> _initRenderers() async {
+    // If streams are already attached to the call, use them now.
+    final local = widget.call.localStream;
+    final remote = widget.call.remoteStream;
+
+    if (local != null) await _setLocal(local);
+    if (remote != null) await _setRemote(remote);
+  }
+
+  Future<void> _setLocal(dynamic stream) async {
+    final r = RTCVideoRenderer();
+    await r.initialize();
+    r.srcObject = stream as MediaStream;
+    if (!mounted) {
+      await r.dispose();
+      return;
+    }
+    await _localRenderer?.dispose();
+    setState(() => _localRenderer = r);
+  }
+
+  Future<void> _setRemote(dynamic stream) async {
+    final r = RTCVideoRenderer();
+    await r.initialize();
+    r.srcObject = stream as MediaStream;
+    if (!mounted) {
+      await r.dispose();
+      return;
+    }
+    await _remoteRenderer?.dispose();
+    setState(() => _remoteRenderer = r);
+  }
+
+  @override
+  void dispose() {
+    _localSub?.cancel();
+    _remoteSub?.cancel();
+    _localRenderer?.dispose();
+    _remoteRenderer?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        children: [
+          _tile(_localRenderer, Icons.videocam, mirror: true),
+          const SizedBox(width: 8),
+          _tile(_remoteRenderer, Icons.person),
+        ],
+      ),
+    );
+  }
+
+  Widget _tile(
+    RTCVideoRenderer? renderer,
+    IconData placeholder, {
+    bool mirror = false,
+  }) {
+    return Expanded(
+      child: Container(
+        height: 120,
+        decoration: BoxDecoration(
+          color:
+              renderer != null ? Colors.black87 : Colors.black.withOpacity(0.4),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: renderer != null
+            ? RTCVideoView(renderer, mirror: mirror)
+            : Center(
+                child: Icon(placeholder,
+                    color: Colors.white.withOpacity(0.38), size: 36)),
+      ),
+    );
+  }
+}
+
+// ─── Supporting widgets ───────────────────────────────────────────────────────
 
 class _ActionButton extends StatelessWidget {
   const _ActionButton({
@@ -277,7 +394,7 @@ class _StateBadge extends StatelessWidget {
       CallState.held: ('HELD', Colors.blue),
       CallState.terminated: ('ENDED', Colors.grey),
     };
-    final (label, color) = map[state]!;
+    final (label, color) = map[state] ?? ('UNKNOWN', Colors.grey);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
@@ -285,50 +402,8 @@ class _StateBadge extends StatelessWidget {
           borderRadius: BorderRadius.circular(10),
           border: Border.all(color: color)),
       child: Text(label,
-          style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: color)),
-    );
-  }
-}
-
-class _VideoTiles extends StatelessWidget {
-  const _VideoTiles({required this.call});
-  final SipKitCall call;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: Row(
-        children: [
-          Expanded(
-            child: Container(
-              height: 120,
-              decoration: BoxDecoration(
-                color: Colors.black87,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: call.localRenderer != null
-                  ? RTCVideoView(call.localRenderer!, mirror: true)
-                  : const Center(
-                      child: Icon(Icons.videocam, color: Colors.white38, size: 36)),
-            ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Container(
-              height: 120,
-              decoration: BoxDecoration(
-                color: Colors.black,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: call.remoteRenderer != null
-                  ? RTCVideoView(call.remoteRenderer!)
-                  : const Center(
-                      child: Icon(Icons.person, color: Colors.white38, size: 36)),
-            ),
-          ),
-        ],
-      ),
+          style: TextStyle(
+              fontSize: 10, fontWeight: FontWeight.bold, color: color)),
     );
   }
 }
@@ -338,7 +413,9 @@ class _InlineDtmf extends StatelessWidget {
   final TextEditingController ctrl;
   final void Function(String) onDigit;
 
-  static const _keys = ['1','2','3','4','5','6','7','8','9','*','0','#'];
+  static const _keys = [
+    '1', '2', '3', '4', '5', '6', '7', '8', '9', '*', '0', '#'
+  ];
 
   @override
   Widget build(BuildContext context) {
@@ -364,8 +441,10 @@ class _InlineDtmf extends StatelessWidget {
                     height: 36,
                     child: OutlinedButton(
                       onPressed: () => onDigit(d),
-                      style: OutlinedButton.styleFrom(padding: EdgeInsets.zero),
-                      child: Text(d, style: const TextStyle(fontSize: 15)),
+                      style: OutlinedButton.styleFrom(
+                          padding: EdgeInsets.zero),
+                      child:
+                          Text(d, style: const TextStyle(fontSize: 15)),
                     ),
                   ))
               .toList(),
