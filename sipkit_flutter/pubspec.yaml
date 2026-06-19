@@ -1,0 +1,34 @@
+name: sipkit_flutter
+description: Token-licensed Flutter SIP/VoIP SDK. Embed voice + video calling in your app — gated by an entitlement JWT issued by the SipKit licensing backend.
+version: 0.1.0
+homepage: https://github.com/sipkit/sipkit_flutter
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+  flutter: ">=3.10.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  sip_ua: ^0.4.5
+  flutter_webrtc: ^0.10.0
+  http: ^1.2.0
+  dart_jsonwebtoken: ^2.8.0
+  flutter_secure_storage: ^9.0.0
+  shared_preferences: ^2.2.0
+  equatable: ^2.0.5
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  plugin:
+    platforms:
+      ios:
+        classPrefix: SipKit
+        pluginClass: SipKitPlugin
+      android:
+        package: com.sipkit.sipkit_flutter
+        pluginClass: SipKitPlugin

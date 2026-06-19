@@ -1,0 +1,55 @@
+group 'com.sipkit.sipkit_flutter'
+version '0.1.0'
+
+buildscript {
+    ext.kotlin_version = '1.9.0'
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:8.1.0'
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+    }
+}
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+        // PJSIP AAR — add your Maven repo or use a local file dependency:
+        // maven { url 'https://your-pjsip-maven-repo.com' }
+    }
+}
+
+apply plugin: 'com.android.library'
+apply plugin: 'kotlin-android'
+
+android {
+    compileSdkVersion 34
+    namespace 'com.sipkit.sipkit_flutter'
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+
+    sourceSets {
+        main.java.srcDirs += 'src/main/kotlin'
+    }
+
+    defaultConfig {
+        minSdkVersion 23
+    }
+}
+
+dependencies {
+    implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:$kotlin_version"
+    // Uncomment when PJSIP AAR is available:
+    // implementation 'org.pjsip:pjsua2-android:2.14.0@aar'
+    compileOnly 'androidx.core:core-ktx:1.12.0'
+}
