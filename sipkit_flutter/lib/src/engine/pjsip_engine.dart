@@ -36,21 +36,18 @@ import 'sip_engine.dart';
 ///   All token gating is applied by [SipKitClient] before engine methods are
 ///   called.  [PjsipEngine] does not need to check entitlements.
 class PjsipEngine extends SipEngine {
-  static const _channel =
-      MethodChannel('com.sipkit.sipkit_flutter/pjsip');
-  static const _eventChannel =
-      EventChannel('com.sipkit.sipkit_flutter/pjsip_events');
+  static const _channel = MethodChannel('com.sipkit.sipkit_flutter/pjsip');
+  static const _eventChannel = EventChannel(
+    'com.sipkit.sipkit_flutter/pjsip_events',
+  );
 
   StreamSubscription<dynamic>? _eventSubscription;
 
   final _incomingCallCtrl = StreamController<IncomingCallEvent>.broadcast();
   final _callStateCtrl = StreamController<CallStateEvent>.broadcast();
-  final _accountStatusCtrl =
-      StreamController<AccountStatusEvent>.broadcast();
-  final _localStreamCtrl =
-      StreamController<(String, MediaStream)>.broadcast();
-  final _remoteStreamCtrl =
-      StreamController<(String, MediaStream)>.broadcast();
+  final _accountStatusCtrl = StreamController<AccountStatusEvent>.broadcast();
+  final _localStreamCtrl = StreamController<(String, MediaStream)>.broadcast();
+  final _remoteStreamCtrl = StreamController<(String, MediaStream)>.broadcast();
 
   @override
   Stream<IncomingCallEvent> get incomingCall => _incomingCallCtrl.stream;
@@ -69,8 +66,9 @@ class PjsipEngine extends SipEngine {
   @override
   Future<void> init() async {
     await _channel.invokeMethod<void>('init');
-    _eventSubscription =
-        _eventChannel.receiveBroadcastStream().listen(_onNativeEvent);
+    _eventSubscription = _eventChannel.receiveBroadcastStream().listen(
+      _onNativeEvent,
+    );
   }
 
   @override
@@ -90,30 +88,40 @@ class PjsipEngine extends SipEngine {
 
   @override
   Future<void> registerAccount(
-      String accountId, SipKitAccountConfig config) async {
+    String accountId,
+    SipKitAccountConfig config,
+  ) async {
     await _channel.invokeMethod<void>('registerAccount', {
       'accountId': accountId,
       'username': config.username,
       'password': config.password,
       'domain': config.domain,
-      'wsUrl': config.wsUrl,
+      'registrar': config.resolvedRegistrar,
+      'sipPort': config.resolvedSipPort,
+      'transport': config.transport.wireName,
+      'outboundProxy': config.outboundProxy,
+      'verifyTls': config.verifyTls,
+      'tlsCaCertPath': config.tlsCaCertPath,
+      'codecPreferences': config.codecPreferences,
+      'keepAliveInterval': config.keepAliveInterval,
       'displayName': config.displayName ?? config.username,
       'authUsername': config.authUsername ?? config.username,
       'registrationExpiry': config.registrationExpiry,
       'iceServers': config.iceServers
-          .map((s) => {
-                'url': s.url,
-                if (s.username != null) 'username': s.username,
-                if (s.credential != null) 'credential': s.credential,
-              })
+          .map(
+            (s) => {
+              'url': s.url,
+              if (s.username != null) 'username': s.username,
+              if (s.credential != null) 'credential': s.credential,
+            },
+          )
           .toList(),
     });
   }
 
   @override
   Future<void> unregister(String accountId) async {
-    await _channel
-        .invokeMethod<void>('unregister', {'accountId': accountId});
+    await _channel.invokeMethod<void>('unregister', {'accountId': accountId});
   }
 
   // ─── Calls ─────────────────────────────────────────────────────────────────
@@ -124,6 +132,9 @@ class PjsipEngine extends SipEngine {
     String target, {
     bool video = false,
   }) async {
+    if (video) {
+      throw UnsupportedError('PjsipEngine currently supports audio calls only');
+    }
     final callId = await _channel.invokeMethod<String>('makeCall', {
       'accountId': accountId,
       'target': target,
@@ -134,8 +145,13 @@ class PjsipEngine extends SipEngine {
 
   @override
   Future<void> answer(String callId, {bool video = false}) async {
-    await _channel
-        .invokeMethod<void>('answer', {'callId': callId, 'video': video});
+    if (video) {
+      throw UnsupportedError('PjsipEngine currently supports audio calls only');
+    }
+    await _channel.invokeMethod<void>('answer', {
+      'callId': callId,
+      'video': video,
+    });
   }
 
   @override
@@ -155,32 +171,39 @@ class PjsipEngine extends SipEngine {
 
   @override
   Future<void> mute(String callId, {required bool muted}) async {
-    await _channel
-        .invokeMethod<void>('mute', {'callId': callId, 'muted': muted});
+    await _channel.invokeMethod<void>('mute', {
+      'callId': callId,
+      'muted': muted,
+    });
   }
 
   @override
   Future<void> sendDtmf(String callId, String digits) async {
-    await _channel
-        .invokeMethod<void>('sendDtmf', {'callId': callId, 'digits': digits});
+    await _channel.invokeMethod<void>('sendDtmf', {
+      'callId': callId,
+      'digits': digits,
+    });
   }
 
   @override
   Future<void> blindTransfer(String callId, String targetUri) async {
-    await _channel.invokeMethod<void>(
-        'blindTransfer', {'callId': callId, 'targetUri': targetUri});
+    await _channel.invokeMethod<void>('blindTransfer', {
+      'callId': callId,
+      'targetUri': targetUri,
+    });
   }
 
   @override
   Future<void> attendedTransfer(String callId, String otherCallId) async {
-    await _channel.invokeMethod<void>('attendedTransfer',
-        {'callId': callId, 'otherCallId': otherCallId});
+    await _channel.invokeMethod<void>('attendedTransfer', {
+      'callId': callId,
+      'otherCallId': otherCallId,
+    });
   }
 
   @override
   Future<void> enableVideo(String callId, {required bool enabled}) async {
-    await _channel.invokeMethod<void>(
-        'enableVideo', {'callId': callId, 'enabled': enabled});
+    throw UnsupportedError('PjsipEngine does not support video calls');
   }
 
   // ─── Native event dispatch ─────────────────────────────────────────────────
@@ -192,26 +215,32 @@ class PjsipEngine extends SipEngine {
 
     if (type == 'accountStatus') {
       final status = _parseAccountStatus(event['status'] as String? ?? '');
-      _accountStatusCtrl.add(AccountStatusEvent(
-        accountId: event['accountId'] as String? ?? '',
-        status: status,
-        reason: event['reason'] as String?,
-      ));
+      _accountStatusCtrl.add(
+        AccountStatusEvent(
+          accountId: event['accountId'] as String? ?? '',
+          status: status,
+          reason: event['reason'] as String?,
+        ),
+      );
     } else if (type == 'callState') {
       final state = _parseCallState(event['state'] as String? ?? '');
-      _callStateCtrl.add(CallStateEvent(
-        callId: event['callId'] as String? ?? '',
-        state: state,
-        reason: event['reason'] as String?,
-      ));
+      _callStateCtrl.add(
+        CallStateEvent(
+          callId: event['callId'] as String? ?? '',
+          state: state,
+          reason: event['reason'] as String?,
+        ),
+      );
     } else if (type == 'incomingCall') {
-      _incomingCallCtrl.add(IncomingCallEvent(
-        callId: event['callId'] as String? ?? '',
-        accountId: event['accountId'] as String? ?? '',
-        remoteUri: event['remoteUri'] as String? ?? '',
-        displayName: event['displayName'] as String? ?? '',
-        hasVideo: event['hasVideo'] as bool? ?? false,
-      ));
+      _incomingCallCtrl.add(
+        IncomingCallEvent(
+          callId: event['callId'] as String? ?? '',
+          accountId: event['accountId'] as String? ?? '',
+          remoteUri: event['remoteUri'] as String? ?? '',
+          displayName: event['displayName'] as String? ?? '',
+          hasVideo: event['hasVideo'] as bool? ?? false,
+        ),
+      );
     }
   }
 

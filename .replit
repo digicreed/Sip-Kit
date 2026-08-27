@@ -1,4 +1,4 @@
-modules = ["nodejs-24", "python-3.11"]
+modules = ["nodejs-24", "python-3.11", "java-graalvm22.3", "dart-3.10"]
 
 [deployment]
 router = "application"
@@ -38,3 +38,7 @@ CORS_ORIGINS = "*"
 ENTITLEMENT_TTL_SECONDS = "86400"
 REFRESH_TOKEN_TTL_DAYS = "30"
 OFFLINE_GRACE_HOURS = "72"
+
+[nix]
+channel = "stable-25_05"
+packages = ["gnumake", "swig", "zip", "unzip", "kotlin"]

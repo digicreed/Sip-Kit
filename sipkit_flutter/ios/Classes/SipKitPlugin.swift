@@ -12,17 +12,14 @@ import AVFoundation
 // Method channel:  com.sipkit.sipkit_flutter/pjsip
 // Event channel:   com.sipkit.sipkit_flutter/pjsip_events
 //
-// Dependencies (add to Podfile):
-//   pod 'pjsip', '~> 2.14'   # or use the prebuilt xcframework
+// Build ios/Frameworks/PJSIP.xcframework before pod install. The podspec
+// conditionally activates this bridge only when that artifact exists.
 //
 // Required Info.plist keys:
 //   NSMicrophoneUsageDescription
-//   NSCameraUsageDescription       (video calls)
-//   UIBackgroundModes: [ voip ]
-//   com.apple.developer.networking.voip: YES   (entitlement)
+//   UIBackgroundModes: [ audio, voip ]
 //
 // Required Entitlement (to receive VoIP pushes):
-//   com.apple.developer.networking.voip: YES
 //   aps-environment: development | production
 // ---------------------------------------------------------------------------
 
@@ -39,15 +36,18 @@ public class SipKitPlugin: NSObject, FlutterPlugin {
 
     // ─── PushKit ───────────────────────────────────────────────────────────
     private var pushRegistry: PKPushRegistry?
+    private let pjsip = SKPJSIPBridge()
 
     // ─── State ────────────────────────────────────────────────────────────
-    /// Maps accountId → PJSUA2 account ID (int).  Full PJSUA2 integration
-    /// requires the pjsip pod; replace stubs below with real PJSUA2 calls.
-    private var accountIds: [String: Int] = [:]
     /// Maps SipKit callId → CXCall UUID (for CallKit correlation).
     private var callUUIDs: [String: UUID] = [:]
-    /// Maps SipKit callId → answer block (deferred until CallKit reports answered).
-    private var pendingAnswers: [String: () -> Void] = [:]
+    /// Push notifications can reach CallKit before the corresponding INVITE.
+    private var pendingPushes: [String: (uuid: UUID, accountId: String, remoteUri: String)] = [:]
+    private var pendingPushOrder: [String] = []
+    private var pendingPushTimeouts: [String: DispatchWorkItem] = [:]
+    private var pendingAnswerActions: [String: CXAnswerCallAction] = [:]
+    private var pendingOutbound: [String: (accountId: String, target: String, result: FlutterResult)] = [:]
+    private var didSetupVoipPushRegistry = false
 
     // ─── Registration ──────────────────────────────────────────────────────
     public static func register(with registrar: FlutterPluginRegistrar) {
@@ -71,17 +71,28 @@ public class SipKitPlugin: NSObject, FlutterPlugin {
     override init() {
         let config = CXProviderConfiguration()
         config.localizedName = "SipKit"
-        config.supportsVideo = true
+        config.supportsVideo = false // PJSUA2 bridge intentionally exposes audio only.
         config.supportedHandleTypes = [.phoneNumber, .generic]
         config.maximumCallGroups = 2
         config.maximumCallsPerCallGroup = 5
         callKitProvider = CXProvider(configuration: config)
         super.init()
-        callKitProvider.setDelegate(self, queue: nil)
+        pjsip.delegate = self
+        callKitProvider.setDelegate(self, queue: DispatchQueue.main)
+        let audioSession = AVAudioSession.sharedInstance()
+        try? audioSession.setCategory(
+            .playAndRecord,
+            mode: .voiceChat,
+            options: [.allowBluetooth]
+        )
     }
 
     // ─── Method channel handler ────────────────────────────────────────────
     public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in self?.handle(call, result: result) }
+            return
+        }
         guard let args = call.arguments as? [String: Any] else {
             if call.method == "init" || call.method == "dispose" {
                 handleLifecycle(call.method, result: result)
@@ -127,16 +138,14 @@ public class SipKitPlugin: NSObject, FlutterPlugin {
 
     // ─── Lifecycle ─────────────────────────────────────────────────────────
     private func handleLifecycle(_ method: String, result: FlutterResult) {
-        if method == "init" {
-            // PJSUA2: Ep.instance().libCreate() + libInit + libStart
-            // PKPushRegistry is already set up at app launch
-            // (see application(_:didFinishLaunchingWithOptions:)).
-            result(nil)
-        } else {
-            // PJSUA2: Ep.instance().libDestroy()
-            callKitProvider.invalidate()
-            result(nil)
+        var error: NSError?
+        let ok = method == "init" ? pjsip.start(&error) : pjsip.stop(&error)
+        if !ok { fail(error, result); return }
+        if method == "dispose" {
+            callUUIDs.removeAll()
+            deactivateVoipPushRegistry()
         }
+        result(nil)
     }
 
     // ─── Account management ────────────────────────────────────────────────
@@ -144,29 +153,16 @@ public class SipKitPlugin: NSObject, FlutterPlugin {
         guard let accountId = args["accountId"] as? String,
               let username  = args["username"]  as? String,
               let password  = args["password"]  as? String,
-              let domain    = args["domain"]    as? String,
-              let wsUrl     = args["wsUrl"]     as? String else {
+              let domain    = args["domain"]    as? String else {
             result(FlutterError(code: "INVALID_ARGS", message: "Missing account args", details: nil))
             return
         }
 
-        // PJSUA2 stub — replace with:
-        //   let cfg = AccountConfig()
-        //   cfg.idUri = "sip:\(username)@\(domain)"
-        //   cfg.regConfig.registrarUri = "sip:\(domain)"
-        //   let acc = MyAccount(); try acc.create(cfg); accountIds[accountId] = acc.getId()
-
-        let displayName = args["displayName"] as? String ?? username
-        _ = wsUrl // used in PJSUA2 transport config
-
-        accountIds[accountId] = Int.random(in: 1..<1000)
-        emitEvent([
-            "type": "accountStatus",
-            "accountId": accountId,
-            "status": "registered",
-            "reason": "stub registration succeeded"
-        ])
-        result(nil)
+        _ = username; _ = password; _ = domain
+        var error: NSError?
+        guard pjsip.registerAccount(args, error: &error) else { fail(error, result); return }
+        setupVoipPushRegistry()
+        result(nil) // registration status is emitted by Account::onRegState.
     }
 
     private func unregister(args: [String: Any], result: FlutterResult) {
@@ -174,9 +170,9 @@ public class SipKitPlugin: NSObject, FlutterPlugin {
             result(FlutterError(code: "INVALID_ARGS", message: "Missing accountId", details: nil))
             return
         }
-        // PJSUA2 stub — acc.setRegistration(false)
-        accountIds.removeValue(forKey: accountId)
-        emitEvent(["type": "accountStatus", "accountId": accountId, "status": "unregistered"])
+        var error: NSError?
+        guard pjsip.unregisterAccount(accountId, error: &error) else { fail(error, result); return }
+        if !pjsip.hasReceivingAccounts() { deactivateVoipPushRegistry() }
         result(nil)
     }
 
@@ -187,29 +183,27 @@ public class SipKitPlugin: NSObject, FlutterPlugin {
             result(FlutterError(code: "INVALID_ARGS", message: "Missing makeCall args", details: nil))
             return
         }
-        let video = args["video"] as? Bool ?? false
-
-        let callId = "call_\(UUID().uuidString.prefix(8))"
+        guard !(args["video"] as? Bool ?? false) else {
+            result(FlutterError(code: "VIDEO_UNSUPPORTED", message: "PJSIP iOS bridge supports audio calls only", details: nil)); return
+        }
+        let callId = UUID().uuidString
         let uuid   = UUID()
         callUUIDs[callId] = uuid
+        pendingOutbound[callId] = (accountId, target, result)
 
         let handle = CXHandle(type: .generic, value: target)
         let startAction = CXStartCallAction(call: uuid, handle: handle)
-        startAction.isVideo = video
+        startAction.isVideo = false
 
         let transaction = CXTransaction(action: startAction)
         callKitController.request(transaction) { [weak self] error in
-            if let error = error {
-                self?.emitEvent([
-                    "type": "callState", "callId": callId,
-                    "state": "terminated", "reason": error.localizedDescription
-                ])
-            } else {
-                // PJSUA2 stub: acc.makeCall(dst: target); callUUIDs[callId] = ...
-                self?.emitEvent(["type": "callState", "callId": callId, "state": "connecting"])
+            DispatchQueue.main.async {
+                if let error, let reservation = self?.pendingOutbound.removeValue(forKey: callId) {
+                    self?.callUUIDs.removeValue(forKey: callId)
+                    reservation.result(FlutterError(code: "CALLKIT_ERROR", message: error.localizedDescription, details: nil))
+                }
             }
         }
-        result(callId)
     }
 
     // ─── Inbound call answer ───────────────────────────────────────────────
@@ -219,13 +213,13 @@ public class SipKitPlugin: NSObject, FlutterPlugin {
             result(FlutterError(code: "INVALID_ARGS", message: "Unknown callId", details: nil))
             return
         }
-        let video = args["video"] as? Bool ?? false
-        _ = video
+        guard !(args["video"] as? Bool ?? false) else { result(FlutterError(code: "VIDEO_UNSUPPORTED", message: "Audio only", details: nil)); return }
 
         let action = CXAnswerCallAction(call: uuid)
         let transaction = CXTransaction(action: action)
-        callKitController.request(transaction) { _ in }
-        result(nil)
+        callKitController.request(transaction) { [weak self] error in
+            if let error { self?.fail(error as NSError, result) } else { result(nil) }
+        }
     }
 
     private func hangupCall(args: [String: Any], result: FlutterResult) {
@@ -236,10 +230,9 @@ public class SipKitPlugin: NSObject, FlutterPlugin {
         }
         let action = CXEndCallAction(call: uuid)
         let transaction = CXTransaction(action: action)
-        callKitController.request(transaction) { [weak self] _ in
-            self?.callUUIDs.removeValue(forKey: callId)
+        callKitController.request(transaction) { [weak self] error in
+            if let error { self?.fail(error as NSError, result) } else { result(nil) }
         }
-        result(nil)
     }
 
     private func holdCall(args: [String: Any], muted: Bool, result: FlutterResult) {
@@ -249,8 +242,9 @@ public class SipKitPlugin: NSObject, FlutterPlugin {
             return
         }
         let action = CXSetHeldCallAction(call: uuid, onHold: muted)
-        callKitController.request(CXTransaction(action: action)) { _ in }
-        result(nil)
+        callKitController.request(CXTransaction(action: action)) { [weak self] error in
+            if let error { self?.fail(error as NSError, result) } else { result(nil) }
+        }
     }
 
     private func muteCall(args: [String: Any], result: FlutterResult) {
@@ -261,8 +255,9 @@ public class SipKitPlugin: NSObject, FlutterPlugin {
         }
         let muted = args["muted"] as? Bool ?? false
         let action = CXSetMutedCallAction(call: uuid, muted: muted)
-        callKitController.request(CXTransaction(action: action)) { _ in }
-        result(nil)
+        callKitController.request(CXTransaction(action: action)) { [weak self] error in
+            if let error { self?.fail(error as NSError, result) } else { result(nil) }
+        }
     }
 
     private func sendDtmf(args: [String: Any], result: FlutterResult) {
@@ -273,9 +268,9 @@ public class SipKitPlugin: NSObject, FlutterPlugin {
             return
         }
         let action = CXPlayDTMFCallAction(call: uuid, digits: digits, type: .singleTone)
-        callKitController.request(CXTransaction(action: action)) { _ in }
-        // PJSUA2 stub: call.dialDtmf(digits)
-        result(nil)
+        callKitController.request(CXTransaction(action: action)) { [weak self] error in
+            if let error { self?.fail(error as NSError, result) } else { result(nil) }
+        }
     }
 
     private func blindTransfer(args: [String: Any], result: FlutterResult) {
@@ -284,8 +279,8 @@ public class SipKitPlugin: NSObject, FlutterPlugin {
             result(FlutterError(code: "INVALID_ARGS", message: "Missing transfer args", details: nil))
             return
         }
-        _ = callId; _ = targetUri
-        // PJSUA2 stub: call.xfer(dst: targetUri, msgData: nil)
+        var error: NSError?
+        guard pjsip.blindTransfer(callId, target: targetUri, error: &error) else { fail(error, result); return }
         result(nil)
     }
 
@@ -295,8 +290,8 @@ public class SipKitPlugin: NSObject, FlutterPlugin {
             result(FlutterError(code: "INVALID_ARGS", message: "Missing attended transfer args", details: nil))
             return
         }
-        _ = callId; _ = otherCallId
-        // PJSUA2 stub: callA.xferReplaces(callB, msgData: nil)
+        var error: NSError?
+        guard pjsip.attendedTransfer(callId, otherCall: otherCallId, error: &error) else { fail(error, result); return }
         result(nil)
     }
 
@@ -307,11 +302,10 @@ public class SipKitPlugin: NSObject, FlutterPlugin {
             return
         }
         _ = callId; _ = enabled
-        // PJSUA2 stub: call.vidSetStream(.PJSUA_VID_REQ_OP_ADD/REMOVE, ...)
-        result(nil)
+        result(FlutterError(code: "VIDEO_UNSUPPORTED", message: "PJSIP iOS bridge supports audio calls only", details: nil))
     }
 
-    // ─── Simulated incoming call (called from PJSUA2 onIncomingCall) ───────
+    // ─── Incoming call reported by the PJSUA2 account callback ─────────────
     func onIncomingCall(callId: String, accountId: String, remoteUri: String, displayName: String) {
         let uuid = UUID()
         callUUIDs[callId] = uuid
@@ -350,10 +344,19 @@ public class SipKitPlugin: NSObject, FlutterPlugin {
     //   "accountId":   "<accountId>"
     // }
     private func setupVoipPushRegistry() {
+        guard pjsip.isAvailable else { return }
+        guard !didSetupVoipPushRegistry else { return }
+        didSetupVoipPushRegistry = true
         let registry = PKPushRegistry(queue: .main)
         registry.delegate = self
         registry.desiredPushTypes = [.voIP]
         pushRegistry = registry
+    }
+
+    private func deactivateVoipPushRegistry() {
+        pushRegistry?.desiredPushTypes = []
+        pushRegistry = nil
+        didSetupVoipPushRegistry = false
     }
 
     // ─── Event emission ───────────────────────────────────────────────────
@@ -362,8 +365,26 @@ public class SipKitPlugin: NSObject, FlutterPlugin {
             self?.eventSink?(event)
         }
     }
-}
 
+    private func expirePendingPush(
+        _ callId: String,
+        code: String,
+        reason: String
+    ) {
+        pendingPushTimeouts.removeValue(forKey: callId)?.cancel()
+        pendingAnswerActions.removeValue(forKey: callId)?.fail()
+        guard let pending = pendingPushes.removeValue(forKey: callId) else { return }
+        pendingPushOrder.removeAll { $0 == callId }
+        callUUIDs.removeValue(forKey: callId)
+        callKitProvider.reportCall(with: pending.uuid, endedAt: Date(), reason: .failed)
+        emitEvent(["type": "pjsipError", "code": code, "callId": callId, "reason": reason])
+    }
+
+    private func fail(_ error: NSError?, _ result: FlutterResult) {
+        result(FlutterError(code: error?.localizedDescription.hasPrefix("PJSIP_UNAVAILABLE") == true ? "PJSIP_UNAVAILABLE" : "PJSIP_ERROR",
+                            message: error?.localizedDescription ?? "PJSIP operation failed", details: nil))
+    }
+}
 // ─── PKPushRegistryDelegate ───────────────────────────────────────────────────
 extension SipKitPlugin: PKPushRegistryDelegate {
 
@@ -385,9 +406,8 @@ extension SipKitPlugin: PKPushRegistryDelegate {
         ])
     }
 
-    /// Called when PushKit receives an incoming VoIP push — even if the app
-    /// is fully terminated.  We MUST call reportNewIncomingCall synchronously
-    /// (before this method returns) or iOS will kill the app.
+    /// PushKit is activated only after a native account exists. Every accepted
+    /// push is reported to CallKit before this completion handler returns.
     public func pushRegistry(
         _ registry: PKPushRegistry,
         didReceiveIncomingPushWith payload: PKPushPayload,
@@ -398,16 +418,56 @@ extension SipKitPlugin: PKPushRegistryDelegate {
             completion()
             return
         }
-
+        guard pjsip.isAvailable else {
+            emitEvent(["type": "pjsipError", "code": "PJSIP_UNAVAILABLE",
+                       "reason": "Cannot create a SIP call without PJSIP.xcframework"])
+            completion()
+            return
+        }
         let dict = payload.dictionaryPayload
-
-        let callId      = dict["callId"]      as? String ?? UUID().uuidString
-        let remoteUri   = dict["remoteUri"]   as? String ?? "sip:unknown@unknown"
+        guard let callId = dict["callId"] as? String, !callId.isEmpty,
+              let accountId = dict["accountId"] as? String, !accountId.isEmpty else {
+            emitEvent(["type": "pjsipError", "code": "INVALID_PUSH",
+                       "reason": "VoIP push requires SIP Call-ID and accountId"])
+            completion()
+            return
+        }
+        let remoteUri = dict["remoteUri"] as? String ?? "sip:unknown@unknown"
         let displayName = dict["displayName"] as? String ?? remoteUri
-        let accountId   = dict["accountId"]   as? String ?? ""
+
+        var startError: NSError?
+        guard pjsip.start(&startError) else {
+            emitEvent(["type": "pjsipError", "code": "PJSIP_ERROR",
+                       "reason": startError?.localizedDescription ?? "Unable to start PJSIP for VoIP push"])
+            completion()
+            return
+        }
+        guard pjsip.canReceiveAccount(accountId) else {
+            emitEvent(["type": "pjsipError", "code": "ACCOUNT_NOT_READY",
+                       "callId": callId, "accountId": accountId,
+                       "reason": "Restore the native SIP account before accepting a VoIP push"])
+            completion()
+            return
+        }
+        guard pendingPushes[callId] == nil && callUUIDs[callId] == nil else {
+            emitEvent(["type": "pjsipError", "code": "DUPLICATE_PUSH",
+                       "callId": callId, "reason": "Duplicate SIP Call-ID in VoIP push"])
+            completion()
+            return
+        }
 
         let uuid = UUID()
+        if pendingPushOrder.count >= 32 {
+            let expired = pendingPushOrder.removeFirst()
+            expirePendingPush(
+                expired,
+                code: "PUSH_CORRELATION_EXPIRED",
+                reason: "VoIP push could not be correlated to a SIP INVITE"
+            )
+        }
         callUUIDs[callId] = uuid
+        pendingPushes[callId] = (uuid, accountId, remoteUri)
+        pendingPushOrder.append(callId)
 
         let update = CXCallUpdate()
         update.remoteHandle    = CXHandle(type: .generic, value: remoteUri)
@@ -416,19 +476,35 @@ extension SipKitPlugin: PKPushRegistryDelegate {
 
         // Must reach CallKit before completion() or within ~2 s after push delivery.
         callKitProvider.reportNewIncomingCall(with: uuid, update: update) { [weak self] error in
-            if error == nil {
-                self?.emitEvent([
-                    "type":        "incomingCall",
-                    "callId":      callId,
-                    "accountId":   accountId,
-                    "remoteUri":   remoteUri,
-                    "displayName": displayName,
-                    "hasVideo":    false
-                ])
-                // PJSUA2: At this point start the engine if not running and
-                // answer the auto-SIP dialog when the user taps Accept in CallKit.
+            DispatchQueue.main.async {
+                guard let self else { completion(); return }
+                if let error {
+                    self.expirePendingPush(
+                        callId,
+                        code: "PUSH_PROVIDER_REJECTED",
+                        reason: "CallKit rejected the VoIP push: \(error.localizedDescription)"
+                    )
+                } else {
+                    self.emitEvent([
+                        "type": "incomingCall", "callId": callId,
+                        "accountId": accountId, "remoteUri": remoteUri,
+                        "displayName": displayName, "hasVideo": false
+                    ])
+                    let timeout = DispatchWorkItem { [weak self] in
+                        self?.expirePendingPush(
+                            callId,
+                            code: "PUSH_CORRELATION_TIMEOUT",
+                            reason: "Matching SIP INVITE did not arrive within 20 seconds"
+                        )
+                    }
+                    self.pendingPushTimeouts[callId] = timeout
+                    DispatchQueue.main.asyncAfter(
+                        deadline: .now() + 20,
+                        execute: timeout
+                    )
+                }
+                completion()
             }
-            completion()
         }
     }
 
@@ -445,55 +521,141 @@ extension SipKitPlugin: PKPushRegistryDelegate {
 extension SipKitPlugin: CXProviderDelegate {
 
     public func providerDidReset(_ provider: CXProvider) {
+        pendingAnswerActions.values.forEach { $0.fail() }
+        pendingAnswerActions.removeAll()
+        pendingPushes.removeAll()
+        pendingPushOrder.removeAll()
+        pendingPushTimeouts.values.forEach { $0.cancel() }
+        pendingPushTimeouts.removeAll()
+        pendingOutbound.values.forEach {
+            $0.result(FlutterError(code: "CALLKIT_RESET",
+                                   message: "CallKit reset before the SIP INVITE could start", details: nil))
+        }
+        pendingOutbound.removeAll()
         callUUIDs.removeAll()
     }
 
     public func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
-        // PJSUA2 stub: call.answer(200)
         let callId = callUUIDs.first(where: { $0.value == action.callUUID })?.key ?? ""
-        emitEvent(["type": "callState", "callId": callId, "state": "established"])
+        if pendingPushes[callId] != nil {
+            // Do not fulfill until an INVITE has been correlated and answered.
+            pendingAnswerActions[callId] = action
+            return
+        }
+        var error: NSError?
+        guard pjsip.answer(callId, error: &error) else { action.fail(); emitEvent(["type":"callState", "callId":callId, "state":"terminated", "reason":error?.localizedDescription ?? "answer failed"]); return }
         action.fulfill()
     }
 
     public func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
         let callId = callUUIDs.first(where: { $0.value == action.callUUID })?.key ?? ""
-        // PJSUA2 stub: call.hangup()
-        emitEvent(["type": "callState", "callId": callId, "state": "terminated"])
+        if let pending = pendingAnswerActions.removeValue(forKey: callId) {
+            pending.fail()
+            pendingPushes.removeValue(forKey: callId)
+            pendingPushOrder.removeAll { $0 == callId }
+            callUUIDs.removeValue(forKey: callId)
+            action.fulfill()
+            return
+        }
+        var error: NSError?
+        guard pjsip.hangup(callId, error: &error) else { action.fail(); return }
+        callUUIDs.removeValue(forKey: callId)
         action.fulfill()
     }
 
     public func provider(_ provider: CXProvider, perform action: CXSetHeldCallAction) {
         let callId = callUUIDs.first(where: { $0.value == action.callUUID })?.key ?? ""
-        emitEvent([
-            "type": "callState",
-            "callId": callId,
-            "state": action.isOnHold ? "held" : "established"
-        ])
+        var error: NSError?
+        guard pjsip.setHold(action.isOnHold, callId: callId, error: &error) else { action.fail(); return }
         action.fulfill()
     }
 
     public func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
+        let callId = callUUIDs.first(where: { $0.value == action.callUUID })?.key ?? ""
+        var error: NSError?
+        guard pjsip.setMuted(action.isMuted, callId: callId, error: &error) else { action.fail(); return }
         action.fulfill()
     }
 
     public func provider(_ provider: CXProvider, perform action: CXPlayDTMFCallAction) {
+        let callId = callUUIDs.first(where: { $0.value == action.callUUID })?.key ?? ""
+        var error: NSError?
+        guard pjsip.sendDTMF(action.digits, callId: callId, error: &error) else { action.fail(); return }
         action.fulfill()
     }
 
     public func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
         let callId = callUUIDs.first(where: { $0.value == action.callUUID })?.key ?? ""
+        guard let reservation = pendingOutbound.removeValue(forKey: callId) else {
+            action.fail()
+            emitEvent(["type":"callState", "callId":callId, "state":"terminated",
+                       "reason":"Missing outbound reservation; restore the SIP account and retry"])
+            return
+        }
+        var error: NSError?
+        guard pjsip.makeCall(forAccount: reservation.accountId, target: reservation.target,
+                             preferredCallId: callId, error: &error) else {
+            action.fail()
+            callUUIDs.removeValue(forKey: callId)
+            emitEvent(["type":"callState", "callId":callId, "state":"terminated",
+                       "reason":error?.localizedDescription ?? "PJSIP failed to send INVITE"])
+            reservation.result(FlutterError(code: "PJSIP_ERROR",
+                                            message: error?.localizedDescription ?? "PJSIP failed to send INVITE",
+                                            details: nil))
+            return
+        }
         provider.reportOutgoingCall(with: action.callUUID, startedConnectingAt: nil)
-        emitEvent(["type": "callState", "callId": callId, "state": "ringing"])
         action.fulfill()
+        reservation.result(callId)
     }
 
     public func provider(_ provider: CXProvider,
                          didActivate audioSession: AVAudioSession) {
-        // PJSUA2 stub: AudDevManager.instance().setActiveDev(...)
+        pjsip.setAudioActive(true)
     }
 
     public func provider(_ provider: CXProvider,
-                         didDeactivate audioSession: AVAudioSession) {}
+                         didDeactivate audioSession: AVAudioSession) { pjsip.setAudioActive(false) }
+}
+
+extension SipKitPlugin: SKPJSIPBridgeDelegate {
+    public func pjsipBridgeDidEmitEvent(_ event: [String : Any]) {
+        if event["type"] as? String == "incomingCall",
+           let callId = event["callId"] as? String,
+           let remote = event["remoteUri"] as? String {
+            let account = event["accountId"] as? String ?? ""
+            // Prefer matching the native Call-ID if supplied by the push
+            // server; otherwise correlate its account and remote URI.
+            if let pending = pendingPushes.removeValue(forKey: callId) {
+                let pushKey = callId
+                pendingPushTimeouts.removeValue(forKey: pushKey)?.cancel()
+                pendingPushOrder.removeAll { $0 == pushKey }
+                callUUIDs.removeValue(forKey: pushKey)
+                callUUIDs[callId] = pending.uuid
+                if let answer = pendingAnswerActions.removeValue(forKey: pushKey) {
+                    var error: NSError?
+                    if pjsip.answer(callId, error: &error) { answer.fulfill() }
+                    else { answer.fail(); emitEvent(["type":"callState", "callId":callId, "state":"terminated", "reason":error?.localizedDescription ?? "answer failed"]) }
+                }
+                emitEvent(event)
+                return
+            }
+            onIncomingCall(callId: callId, accountId: event["accountId"] as? String ?? "",
+                           remoteUri: remote, displayName: event["displayName"] as? String ?? remote)
+        } else {
+            if event["type"] as? String == "callState",
+               let callId = event["callId"] as? String, let uuid = callUUIDs[callId] {
+                switch event["state"] as? String {
+                case "established": callKitProvider.reportOutgoingCall(with: uuid, connectedAt: Date())
+                case "terminated":
+                    callKitProvider.reportCall(with: uuid, endedAt: Date(), reason: .remoteEnded)
+                    callUUIDs.removeValue(forKey: callId)
+                default: break
+                }
+            }
+            emitEvent(event)
+        }
+    }
 }
 
 // ─── FlutterStreamHandler ─────────────────────────────────────────────────────
@@ -508,21 +670,5 @@ extension SipKitPlugin: FlutterStreamHandler {
     public func onCancel(withArguments arguments: Any?) -> FlutterError? {
         self.eventSink = nil
         return nil
-    }
-}
-
-// ─── FlutterApplicationLifeCycleDelegate ─────────────────────────────────────
-extension SipKitPlugin: FlutterApplicationLifeCycleDelegate {
-
-    /// Register for VoIP push at the earliest possible moment — app launch —
-    /// so a cold-start push can call pushRegistry(_:didReceiveIncomingPushWith:)
-    /// before the Flutter engine finishes initialising.
-    ///
-    /// This is the authoritative place for PKPushRegistry setup; the method-
-    /// channel `init` handler no longer creates the registry (it is already live).
-    public func application(_ application: UIApplication,
-                            didFinishLaunchingWithOptions launchOptions: [AnyHashable: Any]?) -> Bool {
-        setupVoipPushRegistry()
-        return true
     }
 }

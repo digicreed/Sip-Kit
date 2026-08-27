@@ -32,9 +32,9 @@ import '../models/call_state.dart';
 //   final client = SipKitClient(engine: MyCpaasSipEngine());
 //
 // IMPORTANT — LICENSING:
-//   Token gating is applied by `SipKitClient` **before** any engine method is
-//   called.  Custom engines do NOT need to check entitlements — that
-//   enforcement cannot be bypassed regardless of which engine is used.
+//   Token gating is applied by `SipKitClient` before any engine method is
+//   called, so custom engines do not duplicate those checks in an unmodified
+//   SDK. GPL recipients may modify the covered source.
 //
 // STREAM CONTRACTS:
 //   All broadcast streams must remain open for the lifetime of the engine

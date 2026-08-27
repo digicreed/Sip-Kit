@@ -1,6 +1,8 @@
 # SipKit Flutter SDK
 
-A token-licensed Flutter SIP/VoIP SDK.  Add voice + video calling to your app — unlocked by a short-lived entitlement JWT issued by the SipKit licensing backend.
+A GPLv2-or-later Flutter SIP/VoIP SDK with token-gated service entitlements.
+Add voice + video calling to your app, unlocked in unmodified builds by a
+short-lived entitlement JWT issued by the SipKit licensing backend.
 
 ---
 
@@ -8,8 +10,8 @@ A token-licensed Flutter SIP/VoIP SDK.  Add voice + video calling to your app �
 
 | Platform | Recommended engine | Notes |
 |---|---|---|
-| iOS | `PjsipEngine` | CallKit native call screen; background socket via VoIP entitlement |
-| Android | `PjsipEngine` | ConnectionService; background keepalive foreground service |
+| iOS | `PjsipEngine` | Requires a locally built PJSUA2 XCFramework; CallKit native call screen |
+| Android | `PjsipEngine` | Requires a locally built PJSUA2 AAR; ConnectionService and foreground keepalive |
 | macOS / Windows / Linux | `WebrtcEngine` | Foreground only — no OS call management on desktop |
 | Any (fallback/dev) | `WebrtcEngine` | Works on all platforms; no native code required |
 
@@ -19,7 +21,7 @@ Switch with one constructor parameter:
 // WebRTC (default — all platforms, foreground):
 final client = SipKitClient();
 
-// PJSIP (native background + CallKit/ConnectionService):
+// PJSIP (native background + CallKit/ConnectionService; build native artifacts first):
 final client = SipKitClient(engine: PjsipEngine());
 
 // Custom engine (provider-built):
@@ -108,7 +110,11 @@ class MyCpaasSipEngine extends SipEngine {
 final client = SipKitClient(engine: MyCpaasSipEngine());
 ```
 
-**IMPORTANT — Licensing:**  Token gating is applied by `SipKitClient` *before* any engine method is called.  Custom engines do **not** need to check entitlements — this enforcement cannot be bypassed regardless of which engine is used.
+**IMPORTANT — Licensing:** Token gating is applied by `SipKitClient` *before*
+any engine method is called. Custom engines therefore do not need to duplicate
+entitlement checks when used with an unmodified SDK. Because GPL recipients
+may inspect and modify the covered source, token enforcement must not be
+described as technically or legally unbypassable in a GPL distribution.
 
 ---
 
@@ -168,27 +174,22 @@ GET https://your-sipkit-backend.com/api/v1/public-key
 ```xml
 <key>NSMicrophoneUsageDescription</key>
 <string>SipKit needs the microphone for voice calls.</string>
-<key>NSCameraUsageDescription</key>
-<string>SipKit needs the camera for video calls.</string>
 <key>UIBackgroundModes</key>
 <array>
+  <string>audio</string>
   <string>voip</string>
 </array>
 ```
 
-### Entitlements (`.entitlements` file)
-
-```xml
-<key>com.apple.developer.networking.voip</key>
-<true/>
-```
+Enable the Push Notifications capability when using PushKit. Native SipKit
+calls are audio-only.
 
 ### Podfile
 
 ```ruby
 pod 'sipkit_flutter', :path => '../sipkit_flutter'
-# Uncomment when PJSIP prebuilt xcframework is available:
-# pod 'pjsip', '~> 2.14'
+# Build ios/Frameworks/PJSIP.xcframework before pod install; the SipKit podspec
+# detects that path and links SipKit's built-in bridge to it.
 ```
 
 ---
@@ -213,6 +214,75 @@ pod 'sipkit_flutter', :path => '../sipkit_flutter'
   </intent-filter>
 </service>
 ```
+
+---
+
+## Native PJSIP artifacts and GPL source
+
+`PjsipEngine` does **not** bundle PJSIP/PJSUA2 binaries. Native SIP calls need
+the platform artifact built at the paths consumed by SipKit's built-in native
+bridge. The checked-in scripts pin pjproject to
+`08578e86eea120c5ab2ab1af5a18b7840120d87b`, fetch that exact revision, and
+abort if the checkout is different.
+
+From `sipkit_flutter/`:
+
+```sh
+# Android: set this to an installed Android NDK, then produces android/libs/pjsua2-2.14.aar
+export ANDROID_NDK_HOME=/absolute/path/to/android-ndk
+./tool/build_android_pjsua2_aar.sh
+
+# macOS/Xcode only: produces ios/Frameworks/PJSIP.xcframework
+./tool/build_ios_pjsua2_xcframework.sh
+```
+
+The Android artifact contains arm64-v8a, armeabi-v7a, and x86_64 native
+libraries. The iOS script builds device arm64 plus simulator arm64 and x86_64
+slices. See [`docs/NATIVE_PJSIP.md`](docs/NATIVE_PJSIP.md) for prerequisites,
+integration boundaries, reproducible source packaging, and GPL obligations.
+
+The SDK source and GPL-built native distribution are licensed under
+GPLv2-or-later. Distributors must provide complete corresponding source. This
+licensing route allows recipients to modify and redistribute the covered code;
+use a commercial PJSIP license and separately reviewed SDK terms instead if
+that is incompatible with the product's business model.
+
+---
+
+## Provider native SIP configuration
+
+For native PJSIP, `wsUrl` is optional. Use a registrar and UDP, TCP, or TLS
+transport instead. This example deliberately uses provider values rather than
+a public test service:
+
+```dart
+final account = await client.addAccount(SipKitAccountConfig(
+  username: 'alice',
+  password: providerIssuedPassword,
+  domain: 'voice.provider.example',
+  // wsUrl is optional for PjsipEngine; only supply it for WebrtcEngine.
+  registrar: 'registrar.provider.example',
+  sipPort: 5061,
+  transport: SipTransport.tls,
+  outboundProxy: 'sip:edge.provider.example;lr',
+  verifyTls: true,
+  tlsCaCertPath: '/app-support/provider-ca.pem',
+  codecPreferences: const ['opus', 'PCMU'],
+  keepAliveInterval: 30,
+));
+```
+
+Provider checklist:
+
+- Select `udp`, `tcp`, or `tls`; omitted ports resolve to 5060 (UDP/TCP) or
+  5061 (TLS).
+- Set `registrar` when it differs from `domain`; otherwise `domain` is used.
+- For TLS, keep `verifyTls: true` and provide `tlsCaCertPath` only for an
+  additional trusted PEM CA bundle. Do not disable verification in production.
+- Use `outboundProxy` only when the provider requires a route, and ensure codec
+  names and `keepAliveInterval` are accepted by the provider.
+- Keep `wsUrl` for `WebrtcEngine` deployments; it is not a native SIP
+  transport setting.
 
 ---
 

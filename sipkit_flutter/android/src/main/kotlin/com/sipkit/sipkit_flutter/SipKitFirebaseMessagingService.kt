@@ -12,15 +12,13 @@ import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
-import java.util.UUID
 
 /**
  * SipKitFirebaseMessagingService
  *
- * Receives FCM data messages when the app is in the background or terminated.
- * A data-only message (no "notification" block) is always delivered to this
- * service, bypassing the system notification tray, which allows us to present
- * a native call screen instead.
+ * Receives FCM data messages while Firebase can deliver them to this process.
+ * A Telecom call is surfaced only when the referenced native SIP account is
+ * already initialized and ready.
  *
  * Expected FCM data payload (sent by the server push-worker):
  *   callId      – unique identifier for this inbound call
@@ -33,16 +31,16 @@ import java.util.UUID
  *  2. Ensures the SipKit PhoneAccount is registered with TelecomManager.
  *  3. Calls TelecomManager.addNewIncomingCall so Android surfaces the native
  *     incoming-call UI (lock-screen answer/reject) immediately.
- *  4. Starts SipKitForegroundService so the PJSIP engine is alive and can
- *     negotiate the SIP dialog when the user taps Answer.
+ *  4. Starts SipKitForegroundService to present the ongoing-call notification.
+ *     The host must initialize/restore the SIP engine before an FCM wakeup can
+ *     answer a dialog.
  *
  * To receive background FCM messages on Android 13+ the app needs
  * POST_NOTIFICATIONS permission (requested at runtime from Flutter).
  *
  * Registration:
  *   Declare this service in the *host app's* AndroidManifest.xml, and add
- *   google-services.json + the Firebase Messaging dependency.  The plugin's
- *   own manifest stubs the service so it compiles; the host app overrides it.
+ *   google-services.json + the Firebase Messaging dependency.
  *
  * Token reporting:
  *   onNewToken is called by Firebase when a fresh FCM registration token is
@@ -70,11 +68,19 @@ class SipKitFirebaseMessagingService : FirebaseMessagingService() {
         val data = message.data
         if (data.isEmpty()) return
 
-        val callId      = data["callId"]      ?: UUID.randomUUID().toString()
+        val callId      = data["callId"]?.takeIf { it.isNotBlank() }
         val remoteUri   = data["remoteUri"]   ?: "sip:unknown@unknown"
         val displayName = data["displayName"] ?: remoteUri
-        val accountId   = data["accountId"]   ?: ""
+        val accountId   = data["accountId"]?.takeIf { it.isNotBlank() }
 
+        if (callId == null || accountId == null) {
+            SipKitEventBus.emit(mapOf(
+                "type" to "pjsipError",
+                "code" to "INVALID_PUSH",
+                "reason" to "FCM call push requires SIP Call-ID and accountId",
+            ))
+            return
+        }
         reportIncomingCall(callId, remoteUri, displayName, accountId)
     }
 
@@ -85,6 +91,16 @@ class SipKitFirebaseMessagingService : FirebaseMessagingService() {
         displayName: String,
         accountId: String,
     ) {
+        if (!SipKitCallController.canReceive(accountId)) {
+            SipKitEventBus.emit(mapOf(
+                "type" to "voipWakeupError",
+                "code" to "ACCOUNT_NOT_READY",
+                "accountId" to accountId,
+                "callId" to callId,
+                "reason" to "Initialize and restore the SIP account before surfacing this push call",
+            ))
+            return
+        }
         if (!hasTelecomPermission()) {
             SipKitEventBus.emit(
                 mapOf(
@@ -113,20 +129,13 @@ class SipKitFirebaseMessagingService : FirebaseMessagingService() {
             putString("remoteUri",   remoteUri)
             putString("displayName", displayName)
             putString("accountId",   accountId)
+            putBoolean("sipReady", false)
             putBoolean(TelecomManager.EXTRA_START_CALL_WITH_SPEAKERPHONE, false)
         }
 
-        // Bootstrap the PJSIP engine before surfacing the call.
-        // In a terminated-state wakeup the engine has never been started;
-        // SipKitForegroundService must initialize it so the SIP dialog can
-        // be negotiated when the user taps Answer in the system call screen.
-        //
-        // PJSUA2 stub — replace the foreground-service onStartCommand with:
-        //   Endpoint.instance().libCreate()
-        //   Endpoint.instance().libInit(EpConfig())
-        //   Endpoint.instance().libStart()
-        //   // Re-register all accounts from persisted credentials
-        //   restoreAccountRegistrations()
+        // Ensure the ongoing VoIP service notification is present while the
+        // app processes a push wakeup. Account restoration remains owned by
+        // the host application's normal SIP initialization flow.
         SipKitForegroundService.start(this)
 
         try {
@@ -134,6 +143,12 @@ class SipKitFirebaseMessagingService : FirebaseMessagingService() {
             telecomManager.addNewIncomingCall(handle, extras)
         } catch (e: Exception) {
             android.util.Log.e("SipKitFCM", "addNewIncomingCall failed: ${e.message}")
+            SipKitEventBus.emit(mapOf(
+                "type" to "telecomError",
+                "callId" to callId,
+                "reason" to (e.message ?: "Unable to surface incoming call"),
+            ))
+            return
         }
 
         SipKitEventBus.emit(

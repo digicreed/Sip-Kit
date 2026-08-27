@@ -40,6 +40,14 @@ android {
 
     sourceSets {
         main.java.srcDirs += 'src/main/kotlin'
+        // Keep the PJSUA2 bindings out of compilation unless the locally
+        // packaged upstream AAR is present.  This makes the published plugin
+        // usable by applications that do not ship native PJSIP.
+        if (file('libs/pjsua2-2.14.aar').exists()) {
+            main.java.srcDirs += 'src/pjsua2/kotlin'
+        } else {
+            main.java.srcDirs += 'src/no_pjsua2/kotlin'
+        }
     }
 
     defaultConfig {
@@ -49,8 +57,9 @@ android {
 
 dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:$kotlin_version"
-    // Uncomment when PJSIP AAR is available:
-    // implementation 'org.pjsip:pjsua2-android:2.14.0@aar'
+    if (file('libs/pjsua2-2.14.aar').exists()) {
+        implementation files('libs/pjsua2-2.14.aar')
+    }
     compileOnly 'androidx.core:core-ktx:1.12.0'
     // Firebase Cloud Messaging — declared compileOnly so the plugin compiles
     // against the FCM API surface without bundling it into the AAR.

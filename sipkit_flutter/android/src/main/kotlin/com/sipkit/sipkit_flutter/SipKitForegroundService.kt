@@ -54,8 +54,7 @@ class SipKitForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(NOTIFICATION_ID, buildNotification())
-        // PJSUA2 stub: Endpoint.instance() is already initialised by
-        // SipKitPlugin.handleInit(); the socket is kept alive by this service.
+        // The endpoint is initialized by the plugin before this service starts.
         return START_STICKY
     }
 

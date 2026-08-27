@@ -22,16 +22,11 @@ class WebrtcEngine extends SipEngine {
   final Map<String, _AccountHandle> _accounts = {};
   final Map<String, _CallHandle> _calls = {};
 
-  final _incomingCallCtrl =
-      StreamController<IncomingCallEvent>.broadcast();
-  final _callStateCtrl =
-      StreamController<CallStateEvent>.broadcast();
-  final _accountStatusCtrl =
-      StreamController<AccountStatusEvent>.broadcast();
-  final _localStreamCtrl =
-      StreamController<(String, MediaStream)>.broadcast();
-  final _remoteStreamCtrl =
-      StreamController<(String, MediaStream)>.broadcast();
+  final _incomingCallCtrl = StreamController<IncomingCallEvent>.broadcast();
+  final _callStateCtrl = StreamController<CallStateEvent>.broadcast();
+  final _accountStatusCtrl = StreamController<AccountStatusEvent>.broadcast();
+  final _localStreamCtrl = StreamController<(String, MediaStream)>.broadcast();
+  final _remoteStreamCtrl = StreamController<(String, MediaStream)>.broadcast();
 
   @override
   Stream<IncomingCallEvent> get incomingCall => _incomingCallCtrl.stream;
@@ -68,17 +63,30 @@ class WebrtcEngine extends SipEngine {
 
   @override
   Future<void> registerAccount(
-      String accountId, SipKitAccountConfig config) async {
+    String accountId,
+    SipKitAccountConfig config,
+  ) async {
+    final wsUrl = config.wsUrl;
+    if (wsUrl == null || wsUrl.trim().isEmpty) {
+      throw ArgumentError.value(
+        wsUrl,
+        'config.wsUrl',
+        'WebrtcEngine requires a SIP WebSocket URL',
+      );
+    }
     final helper = SIPUAHelper();
     // Per-account listener: events carry the correct accountId.
     final listener = _AccountListener(accountId: accountId, engine: this);
     _accounts[accountId] = _AccountHandle(
-        accountId: accountId, helper: helper, listener: listener);
+      accountId: accountId,
+      helper: helper,
+      listener: listener,
+    );
     helper.addSipUaHelperListener(listener);
 
     final settings = UaSettings()
-      ..webSocketUrl = config.wsUrl
-      ..webSocketSettings.allowBadCertificate = true
+      ..webSocketUrl = wsUrl
+      ..webSocketSettings.allowBadCertificate = !config.verifyTls
       ..uri = 'sip:${config.username}@${config.domain}'
       ..authorizationUser = config.authUsername ?? config.username
       ..password = config.password
@@ -87,11 +95,13 @@ class WebrtcEngine extends SipEngine {
       ..dtmfMode = DtmfMode.RFC2833
       ..registerExpires = config.registrationExpiry
       ..iceServers = config.iceServers
-          .map((s) => RTCIceServer(
-                urls: s.url,
-                username: s.username,
-                credential: s.credential,
-              ))
+          .map(
+            (s) => RTCIceServer(
+              urls: s.url,
+              username: s.username,
+              credential: s.credential,
+            ),
+          )
           .toList();
 
     await helper.start(settings);
@@ -119,12 +129,12 @@ class WebrtcEngine extends SipEngine {
     handle.pendingOutboundCallId = callId;
     _calls[callId] = _CallHandle(callId: callId, accountId: accountId);
 
-    final mediaConstraints = <String, dynamic>{
-      'audio': true,
-      'video': video,
-    };
-    handle.helper.call(target,
-        mediaConstraints: mediaConstraints, voiceonly: !video);
+    final mediaConstraints = <String, dynamic>{'audio': true, 'video': video};
+    handle.helper.call(
+      target,
+      mediaConstraints: mediaConstraints,
+      voiceonly: !video,
+    );
     return callId;
   }
 
@@ -205,8 +215,13 @@ class WebrtcEngine extends SipEngine {
     } else {
       status = AccountStatus.registering;
     }
-    _accountStatusCtrl.add(AccountStatusEvent(
-        accountId: accountId, status: status, reason: state.cause));
+    _accountStatusCtrl.add(
+      AccountStatusEvent(
+        accountId: accountId,
+        status: status,
+        reason: state.cause,
+      ),
+    );
   }
 
   void _onCallState(String accountId, Call call, CallState2 state) {
@@ -263,12 +278,14 @@ class WebrtcEngine extends SipEngine {
     _calls[callId] = _CallHandle(callId: callId, accountId: accountId)
       ..sipCall = call;
 
-    _incomingCallCtrl.add(IncomingCallEvent(
-      callId: callId,
-      accountId: accountId,
-      remoteUri: event.request?.from?.uri.toString() ?? '',
-      displayName: event.request?.from?.display_name ?? '',
-    ));
+    _incomingCallCtrl.add(
+      IncomingCallEvent(
+        callId: callId,
+        accountId: accountId,
+        remoteUri: event.request?.from?.uri.toString() ?? '',
+        displayName: event.request?.from?.display_name ?? '',
+      ),
+    );
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
