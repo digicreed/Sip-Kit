@@ -36,6 +36,12 @@ of PJSIP shared libraries. Installing this artifact activates SipKit's
 built-in Android native bridge; a consuming application must not provide its
 own Java/Kotlin JNI bridge.
 
+After building, verify the archive contents and ELF ABI labels:
+
+```sh
+./tool/verify_native_artifacts.sh --android-only
+```
+
 ### iOS
 
 Run on macOS with Xcode selected (`xcode-select -p`), Xcode command-line tools,
@@ -52,6 +58,12 @@ PJNATH headers, the GPL notice, and GPLv2 text. Installing it activates
 SipKit's built-in iOS native bridge; a consuming application must not supply a
 separate bridge. The script fails before compiling when it is not running on
 macOS or Xcode tools are unavailable.
+
+After building on macOS, verify the XCFramework structure and library slices:
+
+```sh
+./tool/verify_native_artifacts.sh --ios-only
+```
 
 These scripts build libraries only. They do not assert that a physical device,
 provider, registration, or call has been tested.
@@ -80,6 +92,14 @@ SIP:
 The iOS host target must enable Push Notifications and the `voip` and `audio`
 background modes. The Android host must configure Firebase Messaging and
 request microphone and notification permissions at runtime where required.
+
+## Release certification
+
+Use [`NATIVE_CERTIFICATION.md`](NATIVE_CERTIFICATION.md) for the release gate
+and record results in
+[`NATIVE_CERTIFICATION_RESULTS.md`](NATIVE_CERTIFICATION_RESULTS.md). The
+checklist below is intentionally a physical-device procedure; passing the
+native build scripts alone does not certify it.
 
 ## Physical-device validation checklist
 

@@ -32,16 +32,22 @@ class _ProviderCallPageState extends State<ProviderCallPage> {
   final _password = TextEditingController();
   final _domain = TextEditingController();
   final _registrar = TextEditingController();
+  final _sipPort = TextEditingController(text: '5061');
   final _target = TextEditingController();
+  final _transferTarget = TextEditingController();
 
   late final SipKitClient _client = SipKitClient(engine: PjsipEngine());
   StreamSubscription<SipKitCall>? _incomingSubscription;
   StreamSubscription<AccountStatus>? _accountSubscription;
   StreamSubscription<CallState>? _callSubscription;
+  StreamSubscription<CallState>? _consultationSubscription;
   SipKitAccount? _account;
   SipKitCall? _call;
+  SipKitCall? _consultationCall;
   String _status = 'Not initialized';
   bool _busy = false;
+  bool _muted = false;
+  SipTransport _transport = SipTransport.tls;
 
   @override
   void initState() {
@@ -68,8 +74,8 @@ class _ProviderCallPageState extends State<ProviderCallPage> {
           registrar: _registrar.text.trim().isEmpty
               ? null
               : _registrar.text.trim(),
-          transport: SipTransport.tls,
-          sipPort: 5061,
+          transport: _transport,
+          sipPort: int.tryParse(_sipPort.text.trim()),
           verifyTls: true,
           registerOnAdd: true,
         ),
@@ -93,6 +99,48 @@ class _ProviderCallPageState extends State<ProviderCallPage> {
       final call = await _client.makeCall(account.id, _target.text.trim());
       _attachCall(call);
     });
+  }
+
+  Future<void> _startConsultationCall() async {
+    final account = _account;
+    if (account == null) {
+      _setStatus('Register an account first');
+      return;
+    }
+    final target = _transferTarget.text.trim();
+    if (target.isEmpty) {
+      _setStatus('Enter a transfer target first');
+      return;
+    }
+    await _run(() async {
+      final consultation = await _client.makeCall(account.id, target);
+      await _consultationSubscription?.cancel();
+      _consultationSubscription = consultation.state.listen(
+        (state) => _setStatus('Consultation: ${state.name}'),
+      );
+      setState(() => _consultationCall = consultation);
+      _setStatus('Consultation call started; answer it before transferring');
+    });
+  }
+
+  Future<void> _blindTransfer() async {
+    final call = _call;
+    final target = _transferTarget.text.trim();
+    if (call == null || target.isEmpty) {
+      _setStatus('Select a call and enter a transfer target first');
+      return;
+    }
+    await _run(() => call.blindTransfer(target));
+  }
+
+  Future<void> _attendedTransfer() async {
+    final call = _call;
+    final consultation = _consultationCall;
+    if (call == null || consultation == null) {
+      _setStatus('Start a consultation call first');
+      return;
+    }
+    await _run(() => call.attendedTransfer(consultation));
   }
 
   void _attachCall(SipKitCall call) {
@@ -124,6 +172,7 @@ class _ProviderCallPageState extends State<ProviderCallPage> {
     _incomingSubscription?.cancel();
     _accountSubscription?.cancel();
     _callSubscription?.cancel();
+    _consultationSubscription?.cancel();
     _client.dispose();
     for (final controller in [
       _licenseKey,
@@ -132,7 +181,9 @@ class _ProviderCallPageState extends State<ProviderCallPage> {
       _password,
       _domain,
       _registrar,
+      _sipPort,
       _target,
+      _transferTarget,
     ]) {
       controller.dispose();
     }
@@ -156,6 +207,30 @@ class _ProviderCallPageState extends State<ProviderCallPage> {
           _field(_password, 'SIP password', secret: true),
           _field(_domain, 'SIP domain'),
           _field(_registrar, 'Registrar (optional)'),
+          DropdownButtonFormField<SipTransport>(
+            value: _transport,
+            decoration: const InputDecoration(
+              border: OutlineInputBorder(),
+              labelText: 'Native SIP transport',
+            ),
+            items: SipTransport.values
+                .map(
+                  (transport) => DropdownMenuItem(
+                    value: transport,
+                    child: Text(transport.name.toUpperCase()),
+                  ),
+                )
+                .toList(),
+            onChanged: _busy
+                ? null
+                : (transport) {
+                    if (transport != null) {
+                      setState(() => _transport = transport);
+                    }
+                  },
+          ),
+          const SizedBox(height: 12),
+          _field(_sipPort, 'SIP port (5060 UDP/TCP, 5061 TLS)'),
           FilledButton(
             onPressed: _busy ? null : _activateAndRegister,
             child: const Text('Activate & register'),
@@ -165,6 +240,12 @@ class _ProviderCallPageState extends State<ProviderCallPage> {
           FilledButton(
             onPressed: _busy ? null : _placeCall,
             child: const Text('Place audio call'),
+          ),
+          const SizedBox(height: 12),
+          _field(_transferTarget, 'Transfer target number or SIP URI'),
+          OutlinedButton(
+            onPressed: _busy ? null : _startConsultationCall,
+            child: const Text('Start consultation call'),
           ),
           if (call != null) ...[
             const SizedBox(height: 12),
@@ -186,8 +267,28 @@ class _ProviderCallPageState extends State<ProviderCallPage> {
                   child: const Text('Resume'),
                 ),
                 OutlinedButton(
+                  onPressed: _busy
+                      ? null
+                      : () {
+                          call.mute(!_muted);
+                          setState(() => _muted = !_muted);
+                          _setStatus(
+                            _muted ? 'Microphone muted' : 'Microphone unmuted',
+                          );
+                        },
+                  child: Text(_muted ? 'Unmute' : 'Mute'),
+                ),
+                OutlinedButton(
                   onPressed: () => call.sendDtmf('123#'),
                   child: const Text('DTMF 123#'),
+                ),
+                OutlinedButton(
+                  onPressed: _busy ? null : _blindTransfer,
+                  child: const Text('Blind transfer'),
+                ),
+                OutlinedButton(
+                  onPressed: _busy ? null : _attendedTransfer,
+                  child: const Text('Attended transfer'),
                 ),
                 FilledButton.tonal(
                   onPressed: () => _run(call.hangup),
@@ -196,6 +297,13 @@ class _ProviderCallPageState extends State<ProviderCallPage> {
               ],
             ),
           ],
+          if (_consultationCall != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                'Consultation leg: ${_consultationCall!.currentState.name}',
+              ),
+            ),
         ],
       ),
     );

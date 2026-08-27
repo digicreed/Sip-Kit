@@ -30,9 +30,14 @@ license values at runtime instead of committing credentials.
    terminated-process call requires host-owned secure native account
    restoration, which this diagnostic app does not implement.
 
-5. Run on a physical device, enter a staging account, and press **Activate &
-   register**. Registration and call labels change only from native callbacks.
+5. Run on a physical device, select the provider transport, enter a staging
+   account, and press **Activate & register**. Registration and call labels
+   change only from native callbacks. The call controls expose mute, DTMF,
+   blind transfer, and a two-leg attended-transfer flow for the certification
+   matrix.
 
 Do not use production SIP passwords in this diagnostic example. Follow
 [`docs/NATIVE_PJSIP.md`](../docs/NATIVE_PJSIP.md) for push payload correlation,
 GPL source distribution, and the complete physical-device test checklist.
+For the release-gate ledger and evidence rules, see
+[`docs/NATIVE_CERTIFICATION.md`](../docs/NATIVE_CERTIFICATION.md).
