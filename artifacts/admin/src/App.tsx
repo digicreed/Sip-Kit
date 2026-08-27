@@ -10,6 +10,7 @@ import Dashboard from "@/pages/dashboard";
 import Providers from "@/pages/providers";
 import ProviderDetail from "@/pages/provider-detail";
 import Usage from "@/pages/usage";
+import Install from "@/pages/install";
 import NotFound from "@/pages/not-found";
 
 const queryClient = new QueryClient();
@@ -40,6 +41,7 @@ function Router() {
   return (
     <Switch>
       <Route path="/login" component={Login} />
+      <Route path="/install" component={Install} />
       <Route path="/">
         <ProtectedRoute component={Dashboard} />
       </Route>

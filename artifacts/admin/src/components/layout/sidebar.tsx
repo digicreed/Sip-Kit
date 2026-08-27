@@ -1,11 +1,12 @@
 import { useLocation, Link } from "wouter";
-import { LayoutDashboard, Users, Activity, LogOut, Shield } from "lucide-react";
+import { LayoutDashboard, Users, Activity, BookOpen, LogOut, Shield } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const navItems = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
   { name: "Providers", href: "/providers", icon: Users },
   { name: "Usage", href: "/usage", icon: Activity },
+  { name: "Installation Guide", href: "/install", icon: BookOpen },
 ];
 
 export function Sidebar() {

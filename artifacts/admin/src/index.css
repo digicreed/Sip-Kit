@@ -1,3 +1,4 @@
+@import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap");
 @import "tailwindcss";
 @import "tw-animate-css";
 @plugin "@tailwindcss/typography";
@@ -27,65 +28,107 @@
   --color-sidebar-foreground: hsl(var(--sidebar-foreground));
   --color-sidebar-border: hsl(var(--sidebar-border));
 
-  --font-sans: "Inter", sans-serif;
-  --font-mono: "JetBrains Mono", monospace;
+  --font-sans: "DM Sans", sans-serif;
+  --font-mono: "Space Mono", monospace;
   --radius-sm: calc(var(--radius) - 2px);
   --radius-md: var(--radius);
   --radius-lg: calc(var(--radius) + 2px);
 }
 
 :root {
-  --background: 0 0% 100%;
-  --foreground: 240 10% 3.9%;
-  --card: 0 0% 100%;
-  --card-foreground: 240 10% 3.9%;
-  --popover: 0 0% 100%;
-  --popover-foreground: 240 10% 3.9%;
-  --primary: 221.2 83.2% 53.3%;
-  --primary-foreground: 210 40% 98%;
-  --secondary: 240 4.8% 95.9%;
-  --secondary-foreground: 240 5.9% 10%;
-  --muted: 240 4.8% 95.9%;
-  --muted-foreground: 240 3.8% 46.1%;
-  --accent: 240 4.8% 95.9%;
-  --accent-foreground: 240 5.9% 10%;
-  --destructive: 0 84.2% 60.2%;
-  --destructive-foreground: 0 0% 98%;
-  --border: 240 5.9% 90%;
-  --input: 240 5.9% 90%;
-  --ring: 221.2 83.2% 53.3%;
-  --sidebar: 221 39% 11%;
-  --sidebar-foreground: 210 40% 98%;
-  --sidebar-border: 221 39% 16%;
+  --background: 42 33% 96%;
+  --foreground: 209 36% 17%;
+  --card: 42 40% 99%;
+  --card-foreground: 209 36% 17%;
+  --popover: 42 40% 99%;
+  --popover-foreground: 209 36% 17%;
+  --primary: 173 48% 32%;
+  --primary-foreground: 42 40% 98%;
+  --secondary: 38 30% 91%;
+  --secondary-foreground: 209 36% 17%;
+  --muted: 39 25% 92%;
+  --muted-foreground: 209 15% 45%;
+  --accent: 14 72% 58%;
+  --accent-foreground: 42 40% 98%;
+  --destructive: 2 62% 48%;
+  --destructive-foreground: 42 40% 98%;
+  --border: 39 21% 83%;
+  --input: 39 21% 83%;
+  --ring: 173 48% 32%;
+  --sidebar: 209 36% 17%;
+  --sidebar-foreground: 42 40% 98%;
+  --sidebar-border: 209 29% 24%;
   --radius: 0.5rem;
 }
 
 .dark {
-  --background: 222.2 84% 4.9%;
-  --foreground: 210 40% 98%;
-  --card: 222.2 84% 4.9%;
-  --card-foreground: 210 40% 98%;
-  --popover: 222.2 84% 4.9%;
-  --popover-foreground: 210 40% 98%;
-  --primary: 217.2 91.2% 59.8%;
-  --primary-foreground: 222.2 47.4% 11.2%;
-  --secondary: 217.2 32.6% 17.5%;
-  --secondary-foreground: 210 40% 98%;
-  --muted: 217.2 32.6% 17.5%;
-  --muted-foreground: 215 20.2% 65.1%;
-  --accent: 217.2 32.6% 17.5%;
-  --accent-foreground: 210 40% 98%;
-  --destructive: 0 62.8% 30.6%;
-  --destructive-foreground: 210 40% 98%;
-  --border: 217.2 32.6% 17.5%;
-  --input: 217.2 32.6% 17.5%;
-  --ring: 224.3 76.3% 48%;
-  --sidebar: 222.2 84% 4.9%;
-  --sidebar-foreground: 210 40% 98%;
-  --sidebar-border: 217.2 32.6% 17.5%;
+  --background: 209 36% 10%;
+  --foreground: 42 40% 98%;
+  --card: 209 32% 14%;
+  --card-foreground: 42 40% 98%;
+  --popover: 209 32% 14%;
+  --popover-foreground: 42 40% 98%;
+  --primary: 169 47% 57%;
+  --primary-foreground: 209 36% 10%;
+  --secondary: 209 25% 21%;
+  --secondary-foreground: 42 40% 98%;
+  --muted: 209 25% 21%;
+  --muted-foreground: 209 16% 70%;
+  --accent: 14 72% 62%;
+  --accent-foreground: 209 36% 10%;
+  --destructive: 2 65% 58%;
+  --destructive-foreground: 209 36% 10%;
+  --border: 209 23% 26%;
+  --input: 209 23% 26%;
+  --ring: 169 47% 57%;
+  --sidebar: 209 36% 8%;
+  --sidebar-foreground: 42 40% 98%;
+  --sidebar-border: 209 26% 16%;
 }
 
 @layer base {
   * { @apply border-border; }
   body { @apply bg-background text-foreground font-sans antialiased; }
+}
+
+@keyframes sipkit-rise {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes sipkit-pulse {
+  0%, 100% { opacity: .45; transform: scale(.96); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
+.sipkit-rise { animation: sipkit-rise .65s cubic-bezier(.2,.8,.2,1) both; }
+.sipkit-rise-delay-1 { animation-delay: 90ms; }
+.sipkit-rise-delay-2 { animation-delay: 160ms; }
+.sipkit-rise-delay-3 { animation-delay: 230ms; }
+.sipkit-rise-delay-4 { animation-delay: 300ms; }
+.sipkit-pulse { animation: sipkit-pulse 2.3s ease-in-out infinite; }
+
+.install-guide {
+  background:
+    radial-gradient(circle at 80% 0%, hsl(173 48% 32% / .10), transparent 27rem),
+    radial-gradient(circle at 0% 32%, hsl(14 72% 58% / .07), transparent 22rem),
+    hsl(var(--background));
+}
+
+.install-grid {
+  background-image: linear-gradient(hsl(var(--border) / .24) 1px, transparent 1px),
+    linear-gradient(90deg, hsl(var(--border) / .24) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+.code-scroll::-webkit-scrollbar { height: 8px; }
+.code-scroll::-webkit-scrollbar-track { background: hsl(209 35% 12%); }
+.code-scroll::-webkit-scrollbar-thumb { background: hsl(169 30% 36%); border-radius: 999px; }
+
+@media print {
+  .no-print { display: none !important; }
+  .install-guide { background: hsl(var(--background)); }
+  .install-grid { background-image: none; }
+  .install-section, .install-card { break-inside: avoid; }
+  body { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
 }
