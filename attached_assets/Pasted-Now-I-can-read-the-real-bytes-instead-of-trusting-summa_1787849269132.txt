@@ -1,0 +1,77 @@
+Now I can read the real bytes instead of trusting summaries. Let me confirm the path and pull the files that decide this — the native plugins, the PJSIP engine, and the build configs.
+
+Ran a command, found files
+
+Reading the decisive files directly.
+
+Read 3 files
+
+Definitive now. Let me confirm the PJSIP library isn't even declared as a dependency (the last piece).
+
+Read 3 files
+
+Read the raw source on all layers. Verdict: No — it does not support direct PJSIP/SIP. The PjsipEngine is a hollow shell that fakes success. This isn't inference from the roadmap now; it's what the bytes say.
+
+Proof, from your local files
+
+1. No PJSIP dependency exists — anywhere.
+
+pubspec.yaml:13-14 — the SDK's only SIP-capable deps are sip_ua: ^0.4.5 + flutter_webrtc. sip_ua (dart-sip-ua) is WebSocket-only. There is no PJSIP/pjsua2 package in the Dart layer at all.
+android/build.gradle:53 — // implementation 'org.pjsip:pjsua2-android:2.14.0@aar' is commented out. PJSUA2 is not linked.
+ios/sipkit_flutter.podspec:17 — # s.dependency 'pjsip', '~> 2.14' is commented out. Only CallKit, AVFoundation, PushKit are linked — those are Apple's call-UI/audio frameworks, not a SIP stack.
+
+2. The native code does zero SIP work. No import org.pjsip.* (Kotlin) and no import pjsua (Swift). Every SIP action is a // PJSUA2 stub comment:
+
+SipKitPlugin.kt:149 — register sets accountIds[accountId] = (1..1000).random() and emits "reason" to "stub registration succeeded".
+SipKitPlugin.kt:181 — makeCall sends nothing on the wire; it just emits a connecting state event and returns a fake callId.
+answer/hangup/hold/mute/sendDtmf/blindTransfer/enableVideo (SipKitPlugin.kt:186-241) — all bodies are a stub comment + a fake event or nothing.
+iOS SipKitPlugin.swift:162 — identical: Int.random(in: 1..<1000), "stub registration succeeded". makeCall/answer (lines 184-229) drive CallKit UI only (CXStartCallAction, CXAnswerCallAction) — that shows the iOS call screen; it does not register, signal, or carry media.
+
+3. The Dart PjsipEngine is a correct bridge to that empty native code. pjsip_engine.dart:70-133 faithfully forwards init/registerAccount/makeCall over the com.sipkit.sipkit_flutter/pjsip channel. The docstring claims "iOS ✅ / Android ✅" (pjsip_engine.dart:26-27) — that's aspirational; the native end it talks to is stubbed.
+
+What that means in practice
+
+If you do SipKitClient(engine: PjsipEngine()) and addAccount(...), the UI will say REGISTERED — that's a lie (a random int, no SIP REGISTER left the device). makeCall returns a call id and shows "connecting," but nothing dials. No packet ever hits your PBX.
+
+So today SipKit is structurally a SIP-over-WebSocket (WebRTC) client only. Direct SIP over UDP/TCP/TLS with RTP is scaffolded but unimplemented — and even the author's own stub template targets transport=ws (SipKitPlugin.kt:145), so nobody has wired real non-WS transports.
+
+To actually get direct SIP, someone has to build it
+
+Per platform, roughly:
+
+Supply PJSIP binaries — build/obtain pjsua2-android AAR and an iOS PJSIP xcframework, then uncomment build.gradle:53 and podspec:17.
+Implement the ~13 stubbed handlers on each side (libCreate/init/start → AccountConfig+register → makeCall/answer/hangup/hold/mute/dtmf/xfer×2/video → onIncomingCall), plus wire the iOS audio session to PJSIP's AudDevManager and Android's foreground service.
+
+That's real native telephony work — days, not hours — but the Dart bridge, event bus, CallKit and ConnectionService wiring are already done, so it's fill-in-the-stubs, not greenfield.
+
+Want me to turn the stub inventory into a concrete checklist (every PJSUA2 stub site + the exact PJSUA2 call it needs) so it's a ready task list for whoever finishes it?
+
+it has sip_ua in it does it not 
+does that not solve our issue ?
+
+Short answer: no — sip_ua is the WebRTC path, not an escape from it. Let me show you exactly how it's wired.
+
+Read
+webrtc_engine.dart
+
+Right — it has sip_ua, but that is WebRTC. sip_ua (dart-sip-ua) is a port of JsSIP: it does SIP signaling only over WebSocket and media only over WebRTC (DTLS-SRTP). It's not a general SIP stack.
+
+Proof from the file I just read, webrtc_engine.dart:79-81:
+
+final settings = UaSettings()
+  ..webSocketUrl = config.wsUrl          // the ONLY transport input — a wss:// URL
+  ..webSocketSettings.allowBadCertificate = true
+
+UaSettings has no host/port, no UDP, no TCP, no TLS-SIP option — the single entry point is webSocketUrl. And the media it produces is WebRTC MediaStream (lines 4, 250-253). So sip_ua requires:
+
+your PBX to expose a WSS endpoint (Asterisk transport-wss on :8089/ws), and
+WebRTC-enabled endpoints (DTLS-SRTP, ICE, rtcp_mux, etc.).
+
+It cannot register to a plain SIP UDP:5060/TCP/TLS endpoint, and it can't do plain RTP. Having it in the box is exactly the path you're trying to avoid — it doesn't rescue you from WebRTC, it's the definition of it.
+
+So whether it "solves your issue" depends entirely on what's forcing "not WebRTC":
+
+If the goal is just "make/receive calls to your Asterisk from Flutter" and you're fine enabling WSS+WebRTC on the PBX (your repo's pjsip.conf already shows a transport-wss) → then yes, sip_ua/WebrtcEngine works today, zero native code. "Not via WebRTC" isn't actually a requirement in that case.
+If you specifically need classic SIP — talking to a carrier/PBX that only offers plain SIP over UDP/TCP/TLS, or a policy of not turning on WebRTC media — → then no, sip_ua can't do it, and you're back to finishing the stubbed PjsipEngine (real PJSUA2 binaries + the ~13 handlers).
+
+What's driving the "not WebRTC" constraint — is your Asterisk unable/unwilling to do WSS+WebRTC, or is it a different SIP target (a carrier trunk, a legacy PBX) that only speaks plain SIP? That decides whether you ship sip_ua as-is or invest in native PJSIP.
