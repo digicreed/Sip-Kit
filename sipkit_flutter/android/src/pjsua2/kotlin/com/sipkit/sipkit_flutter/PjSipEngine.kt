@@ -3,6 +3,7 @@ package com.sipkit.sipkit_flutter
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
+import android.os.SystemClock
 import org.pjsip.pjsua2.*
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
@@ -207,6 +208,42 @@ internal class PjSipEngine : SipEngine {
         find(callId).xferReplaces(find(otherCallId), CallOpParam())
     }
 
+    override fun diagnostics(accountId: String): Map<String, Any?> = onSip {
+        val account = accounts[accountId]
+        val info = account?.let { runCatching { it.info }.getOrNull() }
+        mapOf(
+            "platform" to "android",
+            "nativeAvailable" to started,
+            "accountPresent" to (account != null),
+            "registrationActive" to (info?.regIsActive == true),
+            "registrationCode" to (info?.regStatus ?: 0),
+            "registrationReason" to (info?.regStatusText ?: "No account registration state"),
+            "registrationDurationMs" to account?.registrationDurationMs,
+            "transport" to account?.diagnosticTransport,
+            "registrar" to account?.diagnosticRegistrar,
+            "sipPort" to account?.diagnosticSipPort,
+            "audioAvailable" to runCatching {
+                requireNotNull(endpoint).audDevManager().enumDev2().size > 0
+            }.getOrDefault(false),
+        )
+    }
+
+    override fun callDiagnostics(callId: String): Map<String, Any?> = onSip {
+        val callInfo = find(callId).info
+        val audioMedia = (0 until callInfo.media.size)
+            .map { callInfo.media[it] }
+            .firstOrNull { it.type == pjmedia_type.PJMEDIA_TYPE_AUDIO }
+        mapOf(
+            "responseCode" to callInfo.lastStatusCode,
+            "responseReason" to callInfo.lastReason,
+            "audioMediaActive" to (
+                audioMedia?.status == pjsua_call_media_status.PJSUA_CALL_MEDIA_ACTIVE ||
+                    audioMedia?.status == pjsua_call_media_status.PJSUA_CALL_MEDIA_REMOTE_HOLD
+                ),
+            "audioMediaStatus" to audioMedia?.status?.toString(),
+        )
+    }
+
     private fun find(id: String) =
         calls[id] ?: throw IllegalArgumentException("Unknown call $id")
 
@@ -348,11 +385,16 @@ internal class PjSipEngine : SipEngine {
     private inner class NativeAccount(
         val key: String,
         private val domain: String,
-        private val registrar: String,
-        private val sipPort: Int,
-        private val transport: String,
+        val diagnosticRegistrar: String,
+        val diagnosticSipPort: Int,
+        val diagnosticTransport: String,
     ) : Account() {
+        var registrationDurationMs: Long? = null
+            private set
+        private var registrationStartedAtMs = 0L
+
         override fun onRegStarted(prm: OnRegStartedParam) {
+            registrationStartedAtMs = SystemClock.elapsedRealtime()
             emitSipEvent(
                 mapOf(
                     "type" to "accountStatus",
@@ -367,6 +409,10 @@ internal class PjSipEngine : SipEngine {
         }
 
         override fun onRegState(prm: OnRegStateParam) {
+            if (registrationStartedAtMs > 0L) {
+                registrationDurationMs =
+                    SystemClock.elapsedRealtime() - registrationStartedAtMs
+            }
             val accountInfo = info
             val status = when {
                 accountInfo.regIsActive &&
@@ -419,14 +465,14 @@ internal class PjSipEngine : SipEngine {
 
         fun destinationUri(target: String): String {
             if (target.startsWith("sip:") || target.startsWith("sips:")) {
-                return uri(target, transport)
+                return uri(target, diagnosticTransport)
             }
             val host = domain.ifBlank {
-                registrar.substringAfter("sip:")
+                diagnosticRegistrar.substringAfter("sip:")
                     .substringAfter("sips:")
                     .substringBefore(":")
             }
-            return uri("sip:$target@$host:$sipPort", transport)
+            return uri("sip:$target@$host:$diagnosticSipPort", diagnosticTransport)
         }
     }
 
@@ -449,7 +495,8 @@ internal class PjSipEngine : SipEngine {
                     "type" to "callState",
                     "callId" to key,
                     "state" to state,
-                    "reason" to callInfo.stateText,
+                    "code" to callInfo.lastStatusCode,
+                    "reason" to callInfo.lastReason,
                 ),
             )
             SipKitCallController.callState(key, state)

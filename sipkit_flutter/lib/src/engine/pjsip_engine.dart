@@ -206,6 +206,24 @@ class PjsipEngine extends SipEngine {
     throw UnsupportedError('PjsipEngine does not support video calls');
   }
 
+  @override
+  Future<Map<String, Object?>> diagnosticSnapshot(String accountId) async {
+    final raw = await _channel.invokeMethod<Map<Object?, Object?>>(
+      'diagnostics',
+      {'accountId': accountId},
+    );
+    return raw?.map((key, value) => MapEntry(key.toString(), value)) ?? {};
+  }
+
+  @override
+  Future<Map<String, Object?>> diagnosticCallSnapshot(String callId) async {
+    final raw = await _channel.invokeMethod<Map<Object?, Object?>>(
+      'callDiagnostics',
+      {'callId': callId},
+    );
+    return raw?.map((key, value) => MapEntry(key.toString(), value)) ?? {};
+  }
+
   // ─── Native event dispatch ─────────────────────────────────────────────────
 
   void _onNativeEvent(dynamic raw) {
@@ -229,6 +247,7 @@ class PjsipEngine extends SipEngine {
           callId: event['callId'] as String? ?? '',
           state: state,
           reason: event['reason'] as String?,
+          code: (event['code'] as num?)?.toInt(),
         ),
       );
     } else if (type == 'incomingCall') {

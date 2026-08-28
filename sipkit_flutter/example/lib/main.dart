@@ -1,7 +1,9 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:sipkit_flutter/sipkit_flutter.dart';
+import 'package:share_plus/share_plus.dart';
 
 void main() => runApp(const ProviderExampleApp());
 
@@ -48,6 +50,7 @@ class _ProviderCallPageState extends State<ProviderCallPage> {
   bool _busy = false;
   bool _muted = false;
   SipTransport _transport = SipTransport.tls;
+  SipDiagnosticReport? _report;
 
   @override
   void initState() {
@@ -99,6 +102,40 @@ class _ProviderCallPageState extends State<ProviderCallPage> {
       final call = await _client.makeCall(account.id, _target.text.trim());
       _attachCall(call);
     });
+  }
+
+  Future<void> _runDiagnostics() async {
+    final account = _account;
+    if (account == null) {
+      _setStatus('Register an account first');
+      return;
+    }
+    await _run(() async {
+      final report = await _client.diagnoseAccount(
+        account.id,
+        testTarget: _target.text.trim().isEmpty ? null : _target.text.trim(),
+      );
+      setState(() => _report = report);
+      _setStatus('Diagnostics: ${report.overallStatus.name}');
+    });
+  }
+
+  Future<void> _copyReport() async {
+    final report = _report;
+    if (report == null) return;
+    await Clipboard.setData(ClipboardData(text: report.toPrettyJson()));
+    _setStatus(
+      'Redacted JSON report copied; paste it into a provider ticket or file',
+    );
+  }
+
+  Future<void> _shareReport() async {
+    final report = _report;
+    if (report == null) return;
+    await Share.share(
+      report.toPrettyJson(),
+      subject: 'SipKit diagnostic ${report.reportId}',
+    );
   }
 
   Future<void> _startConsultationCall() async {
@@ -241,6 +278,60 @@ class _ProviderCallPageState extends State<ProviderCallPage> {
             onPressed: _busy ? null : _placeCall,
             child: const Text('Place audio call'),
           ),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: _busy ? null : _runDiagnostics,
+            icon: const Icon(Icons.health_and_safety_outlined),
+            label: Text(
+              _target.text.trim().isEmpty
+                  ? 'Run registration diagnostics'
+                  : 'Run diagnostics + controlled test call',
+            ),
+          ),
+          if (_report != null) ...[
+            const SizedBox(height: 12),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Troubleshooting report: ${_report!.overallStatus.name}',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 8),
+                    for (final check in _report!.checks)
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: Icon(
+                          check.status == SipDiagnosticStatus.passed
+                              ? Icons.check_circle_outline
+                              : check.status == SipDiagnosticStatus.skipped
+                              ? Icons.remove_circle_outline
+                              : Icons.error_outline,
+                        ),
+                        title: Text(check.title),
+                        subtitle: Text(
+                          '${check.summary}\nOwner: ${check.owner.name}\nNext: ${check.recommendation}',
+                        ),
+                      ),
+                    FilledButton.tonalIcon(
+                      onPressed: _copyReport,
+                      icon: const Icon(Icons.copy),
+                      label: const Text('Copy redacted JSON'),
+                    ),
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      onPressed: _shareReport,
+                      icon: const Icon(Icons.ios_share),
+                      label: const Text('Save / share report'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
           const SizedBox(height: 12),
           _field(_transferTarget, 'Transfer target number or SIP URI'),
           OutlinedButton(

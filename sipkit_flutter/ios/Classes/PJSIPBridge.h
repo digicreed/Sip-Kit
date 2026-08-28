@@ -26,6 +26,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)sendDTMF:(NSString *)digits callId:(NSString *)callId error:(NSError **)error;
 - (BOOL)blindTransfer:(NSString *)callId target:(NSString *)target error:(NSError **)error;
 - (BOOL)attendedTransfer:(NSString *)callId otherCall:(NSString *)otherCallId error:(NSError **)error;
+- (nullable NSDictionary<NSString *, id> *)diagnosticsForAccount:(NSString *)accountId error:(NSError **)error;
+- (nullable NSDictionary<NSString *, id> *)diagnosticsForCall:(NSString *)callId error:(NSError **)error;
 - (void)setAudioActive:(BOOL)active;
 @end
 

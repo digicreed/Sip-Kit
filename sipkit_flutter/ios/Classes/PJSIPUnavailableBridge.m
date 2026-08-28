@@ -23,5 +23,9 @@ static NSError *SKUnavailableError(void) {
 - (BOOL)sendDTMF:(NSString *)digits callId:(NSString *)callId error:(NSError **)error { return [self fail:error]; }
 - (BOOL)blindTransfer:(NSString *)callId target:(NSString *)target error:(NSError **)error { return [self fail:error]; }
 - (BOOL)attendedTransfer:(NSString *)callId otherCall:(NSString *)otherCallId error:(NSError **)error { return [self fail:error]; }
+- (NSDictionary *)diagnosticsForAccount:(NSString *)accountId error:(NSError **)error {
+  return @{@"platform": @"ios", @"nativeAvailable": @NO, @"accountPresent": @NO, @"audioAvailable": @NO};
+}
+- (NSDictionary *)diagnosticsForCall:(NSString *)callId error:(NSError **)error { [self fail:error]; return nil; }
 - (void)setAudioActive:(BOOL)active {}
 @end

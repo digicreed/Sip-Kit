@@ -6,8 +6,14 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include <chrono>
 
 using namespace pj;
+
+static long long SKMonotonicMilliseconds() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 static NSError *SKError(const std::string &message) {
   return [NSError errorWithDomain:@"SipKit.PJSIP" code:2 userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithUTF8String:message.c_str()]}];
@@ -61,6 +67,7 @@ public:
       else if (info.state == PJSIP_INV_STATE_CONFIRMED) state = @"established";
       else if (info.state == PJSIP_INV_STATE_DISCONNECTED) state = @"terminated";
       [b emit:@{@"type":@"callState", @"callId":[NSString stringWithUTF8String:key.c_str()], @"state":state,
+                @"code":@((int)info.lastStatusCode),
                 @"reason":[NSString stringWithUTF8String:info.lastReason.c_str()]}];
       if (info.state == PJSIP_INV_STATE_DISCONNECTED)
         [b retireCall:[NSString stringWithUTF8String:key.c_str()]];
@@ -81,18 +88,22 @@ public:
 class SKAccount : public Account, public std::enable_shared_from_this<SKAccount> {
 public:
   std::string key;
-  std::string domain, registrar;
+  std::string domain, registrar, transport;
   unsigned port;
+  long long registrationStartedAtMs=0, registrationDurationMs=0;
   __weak SKPJSIPBridge *bridge;
   SKAccount(const std::string &k, SKPJSIPBridge *b): key(k), bridge(b) {}
   void onRegState(OnRegStateParam &) override {
     SKPJSIPBridge *b=bridge; if (!b) return;
-    try { AccountInfo i=getInfo(); NSString *status = i.regStatus >= 300 ? @"failed" :
+    try { AccountInfo i=getInfo();
+      if (registrationStartedAtMs > 0) registrationDurationMs=SKMonotonicMilliseconds()-registrationStartedAtMs;
+      NSString *status = i.regStatus >= 300 ? @"failed" :
       (i.regIsActive ? @"registered" : @"unregistered");
       [b emit:@{@"type":@"accountStatus", @"accountId":[NSString stringWithUTF8String:key.c_str()],
       @"status": status, @"reason":[NSString stringWithUTF8String:i.regStatusText.c_str()]}]; } catch (...) {}
   }
   void onRegStarted(OnRegStartedParam &) override {
+    registrationStartedAtMs=SKMonotonicMilliseconds();
     SKPJSIPBridge *b=bridge; if (b) [b emit:@{@"type":@"accountStatus", @"accountId":[NSString stringWithUTF8String:key.c_str()], @"status":@"registering"}];
   }
   void onIncomingCall(OnIncomingCallParam &prm) override {
@@ -204,7 +215,7 @@ public:
         if ([[NSString stringWithUTF8String:codec.codecId.c_str()] lowercaseString] hasPrefix:wanted.lowercaseString])
           endpoint->codecSetPriority(codec.codecId, priority--);
     }
-    acc->domain=domain.UTF8String; acc->registrar=registrar.UTF8String; acc->port=(unsigned)port;
+    acc->domain=domain.UTF8String; acc->registrar=registrar.UTF8String; acc->transport=scheme.UTF8String; acc->port=(unsigned)port;
     acc->create(cfg); { std::lock_guard<std::mutex> lock(stateMutex); accounts[key]=acc; } return YES;
   } catch (Error &e) { if(error)*error=SKError(e.info()); return NO; }
 }
@@ -234,6 +245,36 @@ public:
 }
 - (BOOL)canReceiveAccount:(NSString *)aid { std::lock_guard<std::mutex> lock(stateMutex); return started && accounts.find(aid.UTF8String)!=accounts.end(); }
 - (BOOL)hasReceivingAccounts { std::lock_guard<std::mutex> lock(stateMutex); return started && !accounts.empty(); }
+- (NSDictionary *)diagnosticsForAccount:(NSString *)aid error:(NSError **)error {
+  try {
+    [self registerCurrentThread];
+    std::shared_ptr<SKAccount> acc;
+    { std::lock_guard<std::mutex> lock(stateMutex); auto i=accounts.find(aid.UTF8String); if(i!=accounts.end())acc=i->second; }
+    if (!acc) return @{@"platform": @"ios", @"nativeAvailable": @YES, @"accountPresent": @NO, @"audioAvailable": @NO};
+    AccountInfo info=acc->getInfo();
+    NSString *reason=[NSString stringWithUTF8String:info.regStatusText.c_str()];
+    return @{@"platform": @"ios", @"nativeAvailable": @YES, @"accountPresent": @YES,
+      @"registrationActive": @(info.regIsActive), @"registrationCode": @(info.regStatus),
+      @"registrationReason": reason ?: @"", @"registrationDurationMs": @(acc->registrationDurationMs),
+      @"transport": [NSString stringWithUTF8String:acc->transport.c_str()],
+      @"registrar": [NSString stringWithUTF8String:acc->registrar.c_str()],
+      @"sipPort": @(acc->port), @"audioAvailable": @([AVAudioSession sharedInstance].recordPermission == AVAudioSessionRecordPermissionGranted)};
+  } catch(Error&e) { if(error)*error=SKError(e.info()); return nil; }
+}
+- (NSDictionary *)diagnosticsForCall:(NSString *)callId error:(NSError **)error {
+  [self registerCurrentThread];
+  auto call=[self call:callId error:error]; if(!call)return nil;
+  try {
+    CallInfo info=call->getInfo(); BOOL audioActive=NO; NSString *mediaStatus=@"missing";
+    for (const CallMediaInfo &media : info.media) if (media.type == PJMEDIA_TYPE_AUDIO) {
+      audioActive = media.status == PJSUA_CALL_MEDIA_ACTIVE || media.status == PJSUA_CALL_MEDIA_REMOTE_HOLD;
+      mediaStatus = [NSString stringWithFormat:@"%d", (int)media.status]; break;
+    }
+    return @{@"responseCode": @((int)info.lastStatusCode),
+      @"responseReason": [NSString stringWithUTF8String:info.lastReason.c_str()] ?: @"",
+      @"audioMediaActive": @(audioActive), @"audioMediaStatus": mediaStatus};
+  } catch(Error&e) { if(error)*error=SKError(e.info()); return nil; }
+}
 - (BOOL)makeCallForAccount:(NSString *)aid target:(NSString *)target preferredCallId:(NSString *)preferred error:(NSError **)error { try { [self registerCurrentThread]; std::shared_ptr<SKAccount> acc; {std::lock_guard<std::mutex> lock(stateMutex);auto i=accounts.find(aid.UTF8String);if(i!=accounts.end())acc=i->second;} if(!acc){if(error)*error=SKError("UNKNOWN_ACCOUNT");return NO;} std::string destination=target.UTF8String; if(destination.rfind("sip:",0)!=0 && destination.rfind("sips:",0)!=0) destination="sip:"+destination+"@"+(acc->domain.empty()?acc->registrar:acc->domain)+":"+std::to_string(acc->port); std::string id=preferred.UTF8String; std::shared_ptr<SKCall> call=std::make_shared<SKCall>(*acc,PJSUA_INVALID_ID,id,aid.UTF8String,self); call->accountOwner=acc; {std::lock_guard<std::mutex> lock(stateMutex);calls[id]=call;} try {CallOpParam p(true);call->makeCall(destination,p);} catch(...){std::lock_guard<std::mutex> lock(stateMutex);calls.erase(id);throw;} return YES;}catch(Error&e){if(error)*error=SKError(e.info());return NO;} }
 - (BOOL)answer:(NSString *)id error:(NSError **)error { [self registerCurrentThread]; auto c=[self call:id error:error]; if(!c)return NO; try { CallOpParam p; p.statusCode=PJSIP_SC_OK; c->answer(p);return YES;}catch(Error&e){if(error)*error=SKError(e.info());return NO;} }
 - (BOOL)hangup:(NSString *)id error:(NSError **)error { [self registerCurrentThread]; auto c=[self call:id error:error]; if(!c)return NO; try { CallOpParam p; c->hangup(p);return YES;}catch(Error&e){if(error)*error=SKError(e.info());return NO;} }

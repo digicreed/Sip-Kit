@@ -101,6 +101,75 @@ and record results in
 checklist below is intentionally a physical-device procedure; passing the
 native build scripts alone does not certify it.
 
+## Provider diagnostic report
+
+Diagnostics are opt-in and local by default:
+
+```dart
+final report = await client.diagnoseAccount(
+  account.id,
+  testTarget: 'sip:echo@provider.example', // optional real audio call
+);
+final redactedJson = report.toPrettyJson();
+```
+
+For a cancellable UI, pass `cancellationToken:
+SipDiagnosticCancellationToken()` and call `cancel()` from the host's cancel
+action. A running controlled call is hung up and completed checks remain in the
+returned report.
+
+The versioned JSON contains the report ID, UTC start/end times, SDK version,
+platform, engine, overall status, and stable per-check IDs. Each check includes
+status, ownership, duration, safe evidence, and a plain-language next action.
+Current check families cover:
+
+- `sdk.*`: activation, entitlement, account configuration, and native artifact.
+- `device.*`: microphone, audio route, and Android Telecom readiness.
+- `network.*`: transport, TLS verification policy, and proof that a registrar
+  response was observed.
+- `provider.registration`: final REGISTER status code and reason.
+- `call.controlled_test`: optional INVITE result and final reason.
+- `media.audio_path`: negotiated PJSIP audio-media state. A passing result still
+  requires a human or automated provider endpoint to confirm audible two-way
+  RTP.
+
+The serializer replaces password-, secret-, token-, private-, credential-,
+authorization-, auth-, header-, and payload-shaped evidence with
+`[REDACTED]`, including nested maps. Do not add raw SIP messages, SDP bodies,
+entitlement JWTs, push payloads, recordings, or credentials to evidence.
+
+### Common response interpretation
+
+| Result | Likely owner | Provider action |
+| --- | --- | --- |
+| No SIP response / timeout | Device or network | Verify DNS, port, transport, firewall, NAT, and mobile/Wi-Fi path. |
+| 401 / 403 | Provider registration | Verify auth username, password, account status, source-IP policy, and realm. |
+| 404 | Provider registration | Verify registrar, SIP domain, and account/AOR provisioning. |
+| 408 | Network or provider edge | Inspect the REGISTER/INVITE transaction and edge reachability. |
+| 5xx | Provider service | Inspect registrar, proxy, trunk, or routing availability. |
+| REGISTER passes, INVITE fails | Provider routing | Inspect destination permissions, dial plan, trunk, and final INVITE response. |
+| Call connects, audio inactive | Provider media/network | Verify codec overlap, SDP, RTP firewall/NAT, and media relay. |
+
+### Support handoff template
+
+Attach only `report.toPrettyJson()` and include:
+
+```text
+Report ID:
+UTC test time:
+SDK version:
+Platform and OS version:
+Transport (UDP/TCP/TLS):
+Registrar hostname and port:
+Controlled test destination (if used):
+Expected result:
+Observed result:
+Provider trace/correlation reference:
+```
+
+Do not treat successful registration as proof that downstream PSTN routing,
+billing, destination availability, or two-way media is healthy.
+
 ## Physical-device validation checklist
 
 Run these checks against a provider staging account before shipping:

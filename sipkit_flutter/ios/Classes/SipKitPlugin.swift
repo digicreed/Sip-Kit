@@ -129,6 +129,10 @@ public class SipKitPlugin: NSObject, FlutterPlugin {
             blindTransfer(args: args, result: result)
         case "attendedTransfer":
             attendedTransfer(args: args, result: result)
+        case "diagnostics":
+            diagnostics(args: args, result: result)
+        case "callDiagnostics":
+            callDiagnostics(args: args, result: result)
         case "enableVideo":
             enableVideo(args: args, result: result)
         default:
@@ -163,6 +167,36 @@ public class SipKitPlugin: NSObject, FlutterPlugin {
         guard pjsip.registerAccount(args, error: &error) else { fail(error, result); return }
         setupVoipPushRegistry()
         result(nil) // registration status is emitted by Account::onRegState.
+    }
+
+    private func diagnostics(args: [String: Any], result: FlutterResult) {
+        guard let accountId = args["accountId"] as? String else {
+            result(FlutterError(code: "INVALID_ARGS", message: "Missing accountId", details: nil))
+            return
+        }
+        var error: NSError?
+        guard let report = pjsip.diagnostics(forAccount: accountId, error: &error) else {
+            fail(error, result)
+            return
+        }
+        var enriched = report as? [String: Any] ?? [:]
+        enriched["platform"] = "ios"
+        enriched["microphonePermission"] =
+            AVAudioSession.sharedInstance().recordPermission == .granted
+        result(enriched)
+    }
+
+    private func callDiagnostics(args: [String: Any], result: FlutterResult) {
+        guard let callId = args["callId"] as? String else {
+            result(FlutterError(code: "INVALID_ARGS", message: "Missing callId", details: nil))
+            return
+        }
+        var error: NSError?
+        guard let report = pjsip.diagnostics(forCall: callId, error: &error) else {
+            fail(error, result)
+            return
+        }
+        result(report)
     }
 
     private func unregister(args: [String: Any], result: FlutterResult) {

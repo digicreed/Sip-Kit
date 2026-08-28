@@ -77,6 +77,16 @@ const androidCode = `<uses-permission android:name="android.permission.INTERNET"
 <uses-permission android:name="android.permission.RECORD_AUDIO" />
 <uses-permission android:name="android.permission.CAMERA" />`;
 
+const diagnosticCode = `final report = await client.diagnoseAccount(
+  account.id,
+  // Optional: use a provider-owned echo, voicemail, or test destination.
+  testTarget: 'sip:echo@pbx.example-provider.com',
+);
+
+// Save or attach only the redacted JSON form.
+final redactedJson = report.toPrettyJson();
+print(redactedJson);`;
+
 const checklistItems = [
   {
     id: "tag",
@@ -466,6 +476,32 @@ export default function Install() {
                     <p className="ml-4 mt-3 max-w-2xl border-l border-[#c8d5ce] pl-4 text-sm leading-6 text-[#64757c]">{detail}</p>
                   </details>
                 ))}
+              </div>
+              <div className="mt-6">
+                <CodeBlock code={diagnosticCode} label="provider diagnostic" language="DART" testId="button-copy-diagnostic" />
+              </div>
+              <div className="mt-5 grid gap-4 sm:grid-cols-2">
+                <div className="rounded-xl border border-[#cadfd4] bg-[#e7f1eb] p-5">
+                  <ShieldCheck className="h-5 w-5 text-[#23665d]" />
+                  <h3 className="mt-3 text-sm font-bold text-[#213746]">Safe to hand off</h3>
+                  <p className="mt-2 text-xs leading-5 text-[#526773]">
+                    The JSON serializer removes passwords, tokens, authorization headers, private-key fields, credentials, and raw payload-shaped evidence. Reports stay on the device unless your app explicitly copies, saves, or sends them.
+                  </p>
+                </div>
+                <div className="rounded-xl border border-[#ead5be] bg-[#fff6eb] p-5">
+                  <PhoneCall className="h-5 w-5 text-[#bb633f]" />
+                  <h3 className="mt-3 text-sm font-bold text-[#213746]">What support needs</h3>
+                  <p className="mt-2 text-xs leading-5 text-[#526773]">
+                    Attach the redacted JSON with the report ID, UTC timestamp, SDK version, device platform, transport, and test destination. A passing registration proves registrar access—not PSTN routing or two-way RTP media.
+                  </p>
+                </div>
+              </div>
+              <div className="mt-5 rounded-xl border border-[#d9d6cc] bg-[#faf8f2] p-5 text-sm leading-6 text-[#526773]">
+                <strong className="text-[#213746]">Common registration ownership:</strong>{" "}
+                <span className="font-mono text-xs">401/403</span> usually means provider credentials or policy;{" "}
+                <span className="font-mono text-xs">404</span> points to the registrar/domain;{" "}
+                <span className="font-mono text-xs">408</span> or no response points to DNS, transport, firewall, or NAT;{" "}
+                <span className="font-mono text-xs">5xx</span> points to provider service availability.
               </div>
             </section>
           </div>

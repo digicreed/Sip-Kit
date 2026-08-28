@@ -13,6 +13,7 @@ import '../models/activation_state.dart';
 import '../models/call_direction.dart';
 import '../models/call_state.dart';
 import '../models/conference.dart';
+import '../models/diagnostic_report.dart';
 import '../models/entitlement.dart';
 import 'sipkit_account.dart';
 import 'sipkit_call.dart';
@@ -51,13 +52,13 @@ class SipKitClient {
     EntitlementCache? cache,
     EntitlementVerifier? verifier,
     ActivationService? activationService,
-  })  : _engine = engine ?? WebrtcEngine(),
-        _cache = cache ?? EntitlementCache(),
-        _verifier = verifier ?? EntitlementVerifier() {
+  }) : _engine = engine ?? WebrtcEngine(),
+       _cache = cache ?? EntitlementCache(),
+       _verifier = verifier ?? EntitlementVerifier() {
     final c = _cache;
     final v = _verifier;
-    _activationService = activationService ??
-        ActivationService(cache: c, verifier: v);
+    _activationService =
+        activationService ?? ActivationService(cache: c, verifier: v);
   }
 
   final SipEngine _engine;
@@ -66,8 +67,7 @@ class SipKitClient {
   late final ActivationService _activationService;
 
   // ─── State ─────────────────────────────────────────────────────────────────
-  final _activationStateCtrl =
-      StreamController<ActivationState>.broadcast();
+  final _activationStateCtrl = StreamController<ActivationState>.broadcast();
   ActivationState _activationState = ActivationState.unactivated;
 
   Entitlement? _entitlement;
@@ -85,6 +85,7 @@ class SipKitClient {
   StreamSubscription<(String, MediaStream)>? _remoteStreamSub;
 
   bool _engineInitialised = false;
+  int _diagnosticCallReservations = 0;
 
   // ─── Public streams + state ────────────────────────────────────────────────
 
@@ -102,7 +103,8 @@ class SipKitClient {
 
   /// All active calls (excluding terminated).
   List<SipKitCall> get calls => List.unmodifiable(
-      _calls.values.where((c) => c.currentState != CallState.terminated));
+    _calls.values.where((c) => c.currentState != CallState.terminated),
+  );
 
   /// Broadcast stream of incoming [SipKitCall]s.
   Stream<SipKitCall> get incomingCalls => _incomingCallCtrl.stream;
@@ -180,14 +182,104 @@ class SipKitClient {
     _entitlement!.requireAccountSlot(_accounts.length);
 
     final id = _generateId('acc');
-    final account =
-        SipKitAccount.create(id: id, config: config, engine: _engine);
+    final account = SipKitAccount.create(
+      id: id,
+      config: config,
+      engine: _engine,
+    );
     _accounts[id] = account;
 
     if (config.registerOnAdd) {
       await _engine.registerAccount(id, config);
     }
     return account;
+  }
+
+  /// Produce a credential-redacted troubleshooting report for [accountId].
+  ///
+  /// When [testTarget] is supplied, this places one real audio test call and
+  /// hangs it up after it reaches an established, terminated, or timeout state.
+  Future<SipDiagnosticReport> diagnoseAccount(
+    String accountId, {
+    String? testTarget,
+    Duration timeout = const Duration(seconds: 15),
+    SipDiagnosticCancellationToken? cancellationToken,
+  }) async {
+    _requireNotLocked();
+    final account = _accounts[accountId];
+    if (account == null) {
+      throw ArgumentError.value(accountId, 'accountId', 'Unknown SIP account');
+    }
+    final requestedTestCall = testTarget?.trim().isNotEmpty == true;
+    final testCallBlocked =
+        requestedTestCall &&
+        (_activeCalls > 0 || _diagnosticCallReservations > 0);
+    var reservedTestCall = false;
+    if (requestedTestCall && !testCallBlocked) {
+      _entitlement!.requireCallSlot(_activeCalls + _diagnosticCallReservations);
+      _diagnosticCallReservations++;
+      reservedTestCall = true;
+    }
+    late final SipDiagnosticReport report;
+    try {
+      report = await _engine.runDiagnostics(
+        accountId,
+        account.config,
+        testTarget: testCallBlocked ? null : testTarget,
+        timeout: timeout,
+        cancellationToken: cancellationToken,
+      );
+    } finally {
+      if (reservedTestCall) _diagnosticCallReservations--;
+    }
+    final entitlement = _entitlement!;
+    final check = SipDiagnosticCheck(
+      id: 'sdk.entitlement',
+      title: 'SipKit activation and entitlement',
+      status: SipDiagnosticStatus.passed,
+      owner: SipDiagnosticOwner.sipkit,
+      summary: 'SipKit is activated and allowed to run SIP diagnostics.',
+      recommendation: 'No action required.',
+      startedAt: report.startedAt,
+      durationMs: 0,
+      evidence: {
+        'activationState': _activationState.name,
+        'entitlementExpiresAt': entitlement.expiresAt.toUtc().toIso8601String(),
+      },
+    );
+    final checks = [...report.checks];
+    if (testCallBlocked) {
+      final index = checks.indexWhere(
+        (check) => check.id == 'call.controlled_test',
+      );
+      final blocked = SipDiagnosticCheck(
+        id: 'call.controlled_test',
+        title: 'Controlled test call',
+        status: SipDiagnosticStatus.skipped,
+        owner: SipDiagnosticOwner.device,
+        summary: 'The test call was skipped because another call is active.',
+        recommendation:
+            'End the active call, then run the opt-in controlled test again.',
+        startedAt: report.startedAt,
+        durationMs: 0,
+      );
+      if (index < 0) {
+        checks.add(blocked);
+      } else {
+        checks[index] = blocked;
+      }
+    }
+    return SipDiagnosticReport(
+      reportId: report.reportId,
+      startedAt: report.startedAt,
+      finishedAt: report.finishedAt,
+      overallStatus: report.overallStatus,
+      accountId: report.accountId,
+      engine: report.engine,
+      sdkVersion: report.sdkVersion,
+      platform: report.platform,
+      checks: [check, ...checks],
+    );
   }
 
   /// Remove an account and unregister it from the registrar.
@@ -212,7 +304,7 @@ class SipKitClient {
   }) async {
     _requireNotLocked();
     if (video) _entitlement!.requireFeature('video');
-    _entitlement!.requireCallSlot(_activeCalls);
+    _entitlement!.requireCallSlot(_activeCalls + _diagnosticCallReservations);
 
     final callId = await _engine.makeCall(accountId, target, video: video);
     final call = _buildCall(
@@ -277,7 +369,10 @@ class SipKitClient {
   }
 
   void _applyEntitlement(
-      Entitlement ent, String baseUrl, ActivationState state) {
+    Entitlement ent,
+    String baseUrl,
+    ActivationState state,
+  ) {
     _entitlement = ent;
     _currentBaseUrl = baseUrl;
     _setActivationState(state);
@@ -327,8 +422,10 @@ class SipKitClient {
     });
 
     _accountStatusSub = _engine.accountStatusChanged.listen((event) {
-      _accounts[event.accountId]
-          ?.updateStatus(event.status, reason: event.reason);
+      _accounts[event.accountId]?.updateStatus(
+        event.status,
+        reason: event.reason,
+      );
     });
 
     // Wire media streams → SipKitCall renderers.
@@ -349,46 +446,48 @@ class SipKitClient {
     required String remoteUri,
     required String displayName,
     required CallDirection direction,
-  }) =>
-      SipKitCall.create(
-        id: id,
-        accountId: accountId,
-        remoteUri: remoteUri,
-        displayName: displayName,
-        direction: direction,
-        engine: _engine,
-        // Live getter — reflects the current (possibly refreshed) entitlement.
-        getEntitlement: () {
-          if (_entitlement == null) {
-            throw const ActivationError(
-                'SipKit is not activated. Call activate() first.');
-          }
-          return _entitlement!;
-        },
-      );
+  }) => SipKitCall.create(
+    id: id,
+    accountId: accountId,
+    remoteUri: remoteUri,
+    displayName: displayName,
+    direction: direction,
+    engine: _engine,
+    // Live getter — reflects the current (possibly refreshed) entitlement.
+    getEntitlement: () {
+      if (_entitlement == null) {
+        throw const ActivationError(
+          'SipKit is not activated. Call activate() first.',
+        );
+      }
+      return _entitlement!;
+    },
+  );
 
   /// Blocks if [ActivationState.locked]; permits [active] and [expired] (grace).
   void _requireNotLocked() {
     if (_activationState == ActivationState.locked) {
       throw const ActivationError(
-          'SipKit is locked — the entitlement has expired beyond the grace window. '
-          'Call activate() again to reactivate.');
+        'SipKit is locked — the entitlement has expired beyond the grace window. '
+        'Call activate() again to reactivate.',
+      );
     }
     if (_activationState == ActivationState.unactivated ||
         _activationState == ActivationState.activating) {
       throw ActivationError(
-          'SipKit is not yet activated (state: $_activationState). '
-          'Call activate() first.');
+        'SipKit is not yet activated (state: $_activationState). '
+        'Call activate() first.',
+      );
     }
     if (_entitlement == null) {
       throw const ActivationError(
-          'No entitlement loaded. Call activate() first.');
+        'No entitlement loaded. Call activate() first.',
+      );
     }
   }
 
-  int get _activeCalls => _calls.values
-      .where((c) => c.currentState != CallState.terminated)
-      .length;
+  int get _activeCalls =>
+      _calls.values.where((c) => c.currentState != CallState.terminated).length;
 
   static String _generateId(String prefix) =>
       '${prefix}_${DateTime.now().millisecondsSinceEpoch}';

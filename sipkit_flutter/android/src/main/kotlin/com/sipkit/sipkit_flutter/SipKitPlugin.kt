@@ -68,6 +68,15 @@ class SipKitPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, ActivityAwa
                 "sendDtmf" -> withEngine(result) { dtmf(required(call, "callId"), required(call, "digits")); result.success(null) }
                 "blindTransfer" -> withEngine(result) { blindTransfer(required(call, "callId"), required(call, "targetUri")); result.success(null) }
                 "attendedTransfer" -> withEngine(result) { attendedTransfer(required(call, "callId"), required(call, "otherCallId")); result.success(null) }
+                "diagnostics" -> withEngine(result) {
+                    val report = diagnostics(required(call, "accountId")).toMutableMap()
+                    report["platform"] = "android"
+                    report["microphonePermission"] =
+                        ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+                    report["telecomPermission"] = hasTelecomPermission()
+                    result.success(report)
+                }
+                "callDiagnostics" -> withEngine(result) { result.success(callDiagnostics(required(call, "callId"))) }
                 "enableVideo" -> result.error("VIDEO_UNSUPPORTED", "Video is out of scope on Android", null)
                 else -> result.notImplemented()
             }

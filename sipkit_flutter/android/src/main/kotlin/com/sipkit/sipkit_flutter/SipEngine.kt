@@ -25,6 +25,8 @@ internal interface SipEngine {
     fun dtmf(callId: String, digits: String)
     fun blindTransfer(callId: String, target: String)
     fun attendedTransfer(callId: String, otherCallId: String)
+    fun diagnostics(accountId: String): Map<String, Any?>
+    fun callDiagnostics(callId: String): Map<String, Any?>
 }
 internal data class SipCall(val id: String, val targetUri: String)
 internal interface SipKitConnection {

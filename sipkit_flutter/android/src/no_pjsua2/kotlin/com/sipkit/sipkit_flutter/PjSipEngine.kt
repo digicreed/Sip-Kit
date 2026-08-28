@@ -22,4 +22,10 @@ internal class PjSipEngine : SipEngine {
     override fun dtmf(callId: String, digits: String) = unavailable()
     override fun blindTransfer(callId: String, target: String) = unavailable()
     override fun attendedTransfer(callId: String, otherCallId: String) = unavailable()
+    override fun diagnostics(accountId: String): Map<String, Any?> = mapOf(
+        "nativeAvailable" to false,
+        "accountPresent" to false,
+        "audioAvailable" to false,
+    )
+    override fun callDiagnostics(callId: String): Map<String, Any?> = unavailable()
 }

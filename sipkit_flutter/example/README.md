@@ -36,6 +36,13 @@ license values at runtime instead of committing credentials.
    blind transfer, and a two-leg attended-transfer flow for the certification
    matrix.
 
+6. Tap **Run registration diagnostics** to collect a local report. If a safe
+   echo, voicemail, or test destination is entered, the action places one real
+   audio call and hangs it up after an established, terminated, or timeout
+   state. Use **Copy redacted JSON** or **Save / share report** to hand the
+   report to provider support. Passwords, tokens, authorization headers, and
+   credential-shaped evidence are replaced with `[REDACTED]`.
+
 Do not use production SIP passwords in this diagnostic example. Follow
 [`docs/NATIVE_PJSIP.md`](../docs/NATIVE_PJSIP.md) for push payload correlation,
 GPL source distribution, and the complete physical-device test checklist.

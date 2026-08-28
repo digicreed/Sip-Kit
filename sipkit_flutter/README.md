@@ -284,6 +284,28 @@ Provider checklist:
 - Keep `wsUrl` for `WebrtcEngine` deployments; it is not a native SIP
   transport setting.
 
+### Credential-redacted provider diagnostics
+
+After activation and account creation, generate an opt-in local report:
+
+```dart
+final report = await client.diagnoseAccount(
+  account.id,
+  testTarget: 'sip:echo@provider.example', // optional; places a real call
+);
+print(report.toPrettyJson());
+```
+
+Pass a `SipDiagnosticCancellationToken` when the host needs a cancel action.
+Cancellation hangs up a controlled test call and returns the partial,
+credential-redacted report instead of discarding the completed checks.
+
+Reports include stable check IDs, ownership labels, native artifact and audio
+readiness, current registration response code/reason, transport evidence, and
+an optional controlled call result. Credential-shaped evidence is redacted
+during JSON serialization. SipKit does not upload reports; the host app must
+explicitly copy, save, or send one.
+
 ---
 
 ## Asterisk / FreePBX WebSocket transport test setup

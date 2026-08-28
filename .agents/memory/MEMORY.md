@@ -1,0 +1,1 @@
+- [Provider diagnostic safety](provider-diagnostic-safety.md) — controlled-call reports wait for termination, and auth-shaped evidence is redacted fail-closed.
