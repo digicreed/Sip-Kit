@@ -40,7 +40,12 @@ class SipKitAccount {
   Future<void> register() async {
     if (_currentStatus == AccountStatus.registered) return;
     updateStatus(AccountStatus.registering);
-    await _engine.registerAccount(id, config);
+    try {
+      await _engine.registerAccount(id, config);
+    } catch (error) {
+      updateStatus(AccountStatus.failed, reason: error.toString());
+      rethrow;
+    }
   }
 
   /// Send a REGISTER with `expires=0`.

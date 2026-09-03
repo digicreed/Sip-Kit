@@ -29,7 +29,8 @@ pnpm tsx scripts/seed.ts
 # Output: pk_live_XXXXXXXXXXXXXXXX   ← copy this
 ```
 
-The backend runs at `http://localhost:8080` locally or your Replit dev URL.
+The backend runs at `http://localhost:8080` locally or the published
+`https://sip-kit.replit.app` URL.
 
 ---
 
@@ -39,7 +40,7 @@ Open the app's **Activation screen** and enter:
 
 | Field | Value |
 |---|---|
-| Backend URL | `https://your-replit-dev.repl.co` (or `http://localhost:8080`) |
+| Backend URL | `https://sip-kit.replit.app` (or `http://localhost:8080`) |
 | License Key | `pk_live_XXXXXXXXXXXXXXXX` (from Step 1) |
 
 Tap **Activate**.  The app shows your entitlement details (features, limits, expiry).

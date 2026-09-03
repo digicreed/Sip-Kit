@@ -196,23 +196,66 @@ class SoftphoneState extends ChangeNotifier {
         'password': c.password,
         'domain': c.domain,
         'wsUrl': c.wsUrl,
+        'registrar': c.registrar,
+        'sipPort': c.sipPort,
+        'transport': c.transport.name,
+        'outboundProxy': c.outboundProxy,
+        'verifyTls': c.verifyTls,
+        'tlsCaCertPath': c.tlsCaCertPath,
+        'codecPreferences': c.codecPreferences,
+        'keepAliveInterval': c.keepAliveInterval,
         'displayName': c.displayName,
         'authUsername': c.authUsername,
+        'iceServers': c.iceServers.map((server) => server.toMap()).toList(),
         'registerOnAdd': c.registerOnAdd,
         'registrationExpiry': c.registrationExpiry,
+        'userAgent': c.userAgent,
       };
 
   static SipKitAccountConfig? _configFromMap(Map<String, dynamic> m) {
     try {
+      final transportName = m['transport'] as String?;
+      final transport = SipTransport.values.firstWhere(
+        (value) => value.name == transportName,
+        orElse: () => SipTransport.udp,
+      );
+      final rawIceServers = m['iceServers'];
+      final iceServers = rawIceServers is List
+          ? rawIceServers
+              .whereType<Map>()
+              .map((server) {
+                final url = server['url'];
+                if (url is! String || url.isEmpty) return null;
+                return IceServer(
+                  url: url,
+                  username: server['username'] as String?,
+                  credential: server['credential'] as String?,
+                );
+              })
+              .whereType<IceServer>()
+              .toList()
+          : const <IceServer>[];
       return SipKitAccountConfig(
         username: m['username'] as String,
         password: m['password'] as String,
         domain: m['domain'] as String,
-        wsUrl: m['wsUrl'] as String,
+        wsUrl: m['wsUrl'] as String?,
+        registrar: m['registrar'] as String?,
+        sipPort: (m['sipPort'] as num?)?.toInt(),
+        transport: transport,
+        outboundProxy: m['outboundProxy'] as String?,
+        verifyTls: m['verifyTls'] as bool? ?? true,
+        tlsCaCertPath: m['tlsCaCertPath'] as String?,
+        codecPreferences:
+            (m['codecPreferences'] as List?)?.whereType<String>().toList() ??
+            const [],
+        keepAliveInterval: (m['keepAliveInterval'] as num?)?.toInt() ?? 30,
         displayName: m['displayName'] as String?,
         authUsername: m['authUsername'] as String?,
+        iceServers: iceServers,
         registerOnAdd: m['registerOnAdd'] as bool? ?? true,
         registrationExpiry: m['registrationExpiry'] as int? ?? 600,
+        userAgent: m['userAgent'] as String?,
       );
     } catch (_) {
       return null;
@@ -233,6 +276,23 @@ class SoftphoneState extends ChangeNotifier {
       return acc;
     } on NotEntitledError catch (e) {
       _addLog('Cannot add account: ${e.message}');
+      rethrow;
+    } catch (e) {
+      // SipKitClient creates the account before starting native registration.
+      // Keep that account visible when registration itself fails so the user
+      // can inspect its FAILED state and retry instead of seeing 0 accounts.
+      final retained = _client.accounts.any(
+        (account) =>
+            account.config.username == config.username &&
+            account.config.domain == config.domain,
+      );
+      if (retained) {
+        await saveAccount(config);
+      }
+      _addLog(
+        'Account registration failed: ${config.username}@${config.domain}: $e',
+      );
+      notifyListeners();
       rethrow;
     }
   }

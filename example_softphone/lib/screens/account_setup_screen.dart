@@ -234,7 +234,9 @@ class _AccountTile extends StatelessWidget {
             ),
             title: Text(
                 '${account.config.displayName ?? account.config.username}@${account.config.domain}'),
-            subtitle: Text(account.config.wsUrl,
+            subtitle: Text(
+              account.config.wsUrl ??
+                  'Native SIP (${account.config.transport.name.toUpperCase()})',
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(fontSize: 11)),
             trailing: Row(

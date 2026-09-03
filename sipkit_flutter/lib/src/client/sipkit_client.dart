@@ -9,6 +9,7 @@ import '../licensing/activation.dart';
 import '../licensing/entitlement.dart';
 import '../licensing/entitlement_cache.dart';
 import '../models/account_config.dart';
+import '../models/account_status.dart';
 import '../models/activation_state.dart';
 import '../models/call_direction.dart';
 import '../models/call_state.dart';
@@ -190,7 +191,12 @@ class SipKitClient {
     _accounts[id] = account;
 
     if (config.registerOnAdd) {
-      await _engine.registerAccount(id, config);
+      try {
+        await _engine.registerAccount(id, config);
+      } catch (error) {
+        account.updateStatus(AccountStatus.failed, reason: error.toString());
+        rethrow;
+      }
     }
     return account;
   }

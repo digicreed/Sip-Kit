@@ -15,7 +15,7 @@ class _ActivationScreenState extends State<ActivationScreen> {
   final _formKey = GlobalKey<FormState>();
   final _licenseCtrl = TextEditingController();
   final _baseUrlCtrl = TextEditingController(
-      text: 'https://your-sipkit-backend.com');
+      text: 'https://sip-kit.replit.app');
   bool _loading = false;
 
   @override
