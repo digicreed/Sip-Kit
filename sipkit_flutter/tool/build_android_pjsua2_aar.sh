@@ -9,6 +9,9 @@ ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}"
   die "ANDROID_NDK_HOME (or ANDROID_NDK_ROOT) must name an installed Android NDK."
 [[ -x "$ANDROID_NDK_HOME/ndk-build" ]] ||
   die "ANDROID_NDK_HOME does not contain ndk-build: $ANDROID_NDK_HOME"
+OPENSSL_ANDROID_ROOT="${OPENSSL_ANDROID_ROOT:-}"
+[[ -n "$OPENSSL_ANDROID_ROOT" && -d "$OPENSSL_ANDROID_ROOT" ]] ||
+  die "OPENSSL_ANDROID_ROOT must contain Android OpenSSL builds in ABI-named subdirectories."
 require_command make "Install make (for example, Xcode command-line tools or build-essential)."
 require_command zip "Install zip to assemble the AAR."
 require_command jar "Install a JDK; jar is required to create classes.jar."
@@ -28,6 +31,11 @@ cp "$PACKAGE_DIR/LICENSES/PJPROJECT-GPL-NOTICE.md" "$work/META-INF/"
 cp "$SOURCE_DIR/COPYING" "$work/META-INF/GPL-2.0.txt"
 
 for abi in "${ABIS[@]}"; do
+  openssl_root="$OPENSSL_ANDROID_ROOT/$abi"
+  [[ -f "$openssl_root/include/openssl/ssl.h" ]] ||
+    die "OpenSSL headers not found for $abi: $openssl_root/include/openssl/ssl.h"
+  [[ -f "$openssl_root/lib/libssl.a" && -f "$openssl_root/lib/libcrypto.a" ]] ||
+    die "Static OpenSSL libraries not found for $abi under $openssl_root/lib."
   echo "Building pjproject $PJPROJECT_COMMIT for Android $abi"
   (
     cd "$SOURCE_DIR"
@@ -36,7 +44,12 @@ for abi in "${ABIS[@]}"; do
     # Keep the normal static PJSIP dependency build. The SWIG target links
     # those archives into libpjsua2.so, avoiding a variable set of PJSIP .so
     # files in the AAR.
-    ./configure-android --use-ndk-cflags
+    configure_log="$work/configure-$abi.log"
+    ./configure-android \
+      --use-ndk-cflags \
+      --with-ssl="$openssl_root" | tee "$configure_log"
+    grep -Fq "SSL support enabled" "$configure_log" ||
+      die "pjproject configure did not enable TLS for $abi."
     make dep
     make
     make -C pjsip-apps/src/swig java

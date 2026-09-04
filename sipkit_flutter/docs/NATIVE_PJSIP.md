@@ -17,12 +17,24 @@ Run commands from the `sipkit_flutter` directory.
 
 ### Android
 
-Install Git, GNU make, `zip`, a JDK (`jar`), and an Android NDK. Point
-`ANDROID_NDK_HOME` (or `ANDROID_NDK_ROOT`) at the NDK directory that contains
-`ndk-build`, then run:
+Install Git, GNU make, `zip`, a JDK (`jar`), an Android NDK, and static OpenSSL
+builds for every packaged ABI. Point `ANDROID_NDK_HOME` (or
+`ANDROID_NDK_ROOT`) at the NDK directory that contains `ndk-build`.
+
+Arrange `OPENSSL_ANDROID_ROOT` as:
+
+```text
+android-openssl/
+  arm64-v8a/{include/openssl,lib/libssl.a,lib/libcrypto.a}
+  armeabi-v7a/{include/openssl,lib/libssl.a,lib/libcrypto.a}
+  x86_64/{include/openssl,lib/libssl.a,lib/libcrypto.a}
+```
+
+Then run:
 
 ```sh
 export ANDROID_NDK_HOME=/opt/android-ndk
+export OPENSSL_ANDROID_ROOT=/opt/android-openssl
 ./tool/build_android_pjsua2_aar.sh
 ```
 
@@ -35,6 +47,13 @@ linked into `libpjsua2.so`, rather than being shipped as an uncontrolled set
 of PJSIP shared libraries. Installing this artifact activates SipKit's
 built-in Android native bridge; a consuming application must not provide its
 own Java/Kotlin JNI bridge.
+
+The build checks pjproject's configure output for `SSL support enabled` for
+every ABI and fails otherwise. This is required because PJSUA2 still exposes
+the TLS enum when the native library was built without SSL, but attempting to
+create that transport fails at runtime with `PJSIP_EUNSUPTRANSPORT`. Preserve
+the OpenSSL license and corresponding source alongside the GPL native source
+package distributed with the application.
 
 After building, verify the archive contents and ELF ABI labels:
 

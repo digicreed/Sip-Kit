@@ -228,18 +228,23 @@ abort if the checkout is different.
 From `sipkit_flutter/`:
 
 ```sh
-# Android: set this to an installed Android NDK, then produces android/libs/pjsua2-2.14.aar
+# Android: provide an installed NDK and per-ABI static OpenSSL builds.
+# OPENSSL_ANDROID_ROOT must contain arm64-v8a/, armeabi-v7a/, and x86_64/;
+# each subdirectory contains include/openssl/ plus lib/libssl.a and lib/libcrypto.a.
 export ANDROID_NDK_HOME=/absolute/path/to/android-ndk
+export OPENSSL_ANDROID_ROOT=/absolute/path/to/android-openssl
 ./tool/build_android_pjsua2_aar.sh
 
 # macOS/Xcode only: produces ios/Frameworks/PJSIP.xcframework
 ./tool/build_ios_pjsua2_xcframework.sh
 ```
 
-The Android artifact contains arm64-v8a, armeabi-v7a, and x86_64 native
-libraries. The iOS script builds device arm64 plus simulator arm64 and x86_64
-slices. See [`docs/NATIVE_PJSIP.md`](docs/NATIVE_PJSIP.md) for prerequisites,
-integration boundaries, reproducible source packaging, and GPL obligations.
+The Android build fails unless TLS is enabled for every ABI, preventing an AAR
+that advertises TLS but throws `PJSIP_EUNSUPTRANSPORT` at runtime. The artifact
+contains arm64-v8a, armeabi-v7a, and x86_64 native libraries. The iOS script
+builds device arm64 plus simulator arm64 and x86_64 slices. See
+[`docs/NATIVE_PJSIP.md`](docs/NATIVE_PJSIP.md) for prerequisites, integration
+boundaries, reproducible source packaging, and GPL/OpenSSL obligations.
 
 The SDK source and GPL-built native distribution are licensed under
 GPLv2-or-later. Distributors must provide complete corresponding source. This

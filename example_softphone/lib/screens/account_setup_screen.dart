@@ -19,10 +19,10 @@ class _AccountSetupScreenState extends State<AccountSetupScreen> {
   final _authUsername = TextEditingController();
   final _password = TextEditingController();
   final _domain = TextEditingController();
-  final _sipPort = TextEditingController(text: '5061');
+  final _sipPort = TextEditingController(text: '5060');
   final _wsUrl = TextEditingController();
   final _displayName = TextEditingController();
-  SipTransport _transport = SipTransport.tls;
+  SipTransport _transport = SipTransport.tcp;
   bool _verifyTls = true;
   bool _saving = false;
   String? _addError;
