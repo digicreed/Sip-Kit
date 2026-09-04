@@ -19,8 +19,11 @@ class _AccountSetupScreenState extends State<AccountSetupScreen> {
   final _authUsername = TextEditingController();
   final _password = TextEditingController();
   final _domain = TextEditingController();
+  final _sipPort = TextEditingController(text: '5060');
   final _wsUrl = TextEditingController();
   final _displayName = TextEditingController();
+  SipTransport _transport = SipTransport.udp;
+  bool _verifyTls = true;
   bool _saving = false;
   String? _addError;
 
@@ -31,15 +34,22 @@ class _AccountSetupScreenState extends State<AccountSetupScreen> {
       _addError = null;
     });
     try {
-      final wsUrl = _wsUrl.text.trim().isNotEmpty
-          ? _wsUrl.text.trim()
-          : 'wss://${_domain.text.trim()}:8089/ws';
-      await context.read<SoftphoneState>().addAccount(
+      final state = context.read<SoftphoneState>();
+      final isWebrtc = state.useWebrtcEngine;
+      final wsUrl = isWebrtc
+          ? (_wsUrl.text.trim().isNotEmpty
+                ? _wsUrl.text.trim()
+                : 'wss://${_domain.text.trim()}:8089/ws')
+          : null;
+      await state.addAccount(
         SipKitAccountConfig(
           username: _username.text.trim(),
           password: _password.text.trim(),
           domain: _domain.text.trim(),
           wsUrl: wsUrl,
+          sipPort: isWebrtc ? null : int.parse(_sipPort.text.trim()),
+          transport: _transport,
+          verifyTls: _verifyTls,
           authUsername: _authUsername.text.trim().isNotEmpty
               ? _authUsername.text.trim()
               : null,
@@ -74,6 +84,7 @@ class _AccountSetupScreenState extends State<AccountSetupScreen> {
     _authUsername.clear();
     _password.clear();
     _domain.clear();
+    _sipPort.text = _transport == SipTransport.tls ? '5061' : '5060';
     _wsUrl.clear();
     _displayName.clear();
   }
@@ -129,6 +140,7 @@ class _AccountSetupScreenState extends State<AccountSetupScreen> {
   }
 
   Widget _buildAddForm() {
+    final useWebrtcEngine = context.watch<SoftphoneState>().useWebrtcEngine;
     return Card(
       margin: const EdgeInsets.only(bottom: 16),
       child: Padding(
@@ -152,17 +164,78 @@ class _AccountSetupScreenState extends State<AccountSetupScreen> {
               ),
               _field(_password, 'Password', '••••••••', obscure: true),
               _field(_domain, 'Domain', 'pbx.provider.com'),
-              _field(
-                _wsUrl,
-                'WSS URL (optional)',
-                'wss://pbx.provider.com:8089/ws',
-                required: false,
-              ),
+              if (useWebrtcEngine)
+                _field(
+                  _wsUrl,
+                  'WSS URL (optional)',
+                  'wss://pbx.provider.com:8089/ws',
+                  required: false,
+                )
+              else ...[
+                DropdownButtonFormField<SipTransport>(
+                  value: _transport,
+                  decoration: const InputDecoration(
+                    labelText: 'Transport',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                  items: SipTransport.values
+                      .map(
+                        (transport) => DropdownMenuItem(
+                          value: transport,
+                          child: Text(transport.name.toUpperCase()),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (transport) {
+                    if (transport == null) return;
+                    setState(() {
+                      _transport = transport;
+                      _sipPort.text = transport == SipTransport.tls
+                          ? '5061'
+                          : '5060';
+                    });
+                  },
+                ),
+                const SizedBox(height: 10),
+                _field(
+                  _sipPort,
+                  'SIP port',
+                  _transport == SipTransport.tls ? '5061' : '5060',
+                  keyboardType: TextInputType.number,
+                  validator: (value) {
+                    final port = int.tryParse(value ?? '');
+                    if (port == null || port < 1 || port > 65535) {
+                      return 'Enter a port from 1 to 65535';
+                    }
+                    return null;
+                  },
+                ),
+              ],
               _field(
                 _displayName,
                 'Display name (optional)',
                 'Alice',
                 required: false,
+              ),
+              if (!useWebrtcEngine && _transport == SipTransport.tls)
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Verify TLS certificate'),
+                  subtitle: const Text(
+                    'Disable only for a provider-approved test certificate.',
+                  ),
+                  value: _verifyTls,
+                  onChanged: (value) => setState(() => _verifyTls = value),
+                ),
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Text(
+                  useWebrtcEngine
+                      ? 'Using WebRTC over secure WebSocket (WSS).'
+                      : 'Using native PJSIP over ${_transport.name.toUpperCase()}.',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
               ),
               if (_addError != null) ...[
                 const SizedBox(height: 8),
@@ -214,6 +287,8 @@ class _AccountSetupScreenState extends State<AccountSetupScreen> {
     String hint, {
     bool obscure = false,
     bool required = true,
+    TextInputType? keyboardType,
+    String? Function(String?)? validator,
   }) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
@@ -226,9 +301,12 @@ class _AccountSetupScreenState extends State<AccountSetupScreen> {
           isDense: true,
         ),
         obscureText: obscure,
-        validator: required
-            ? (v) => (v == null || v.isEmpty) ? 'Required' : null
-            : null,
+        keyboardType: keyboardType,
+        validator:
+            validator ??
+            (required
+                ? (v) => (v == null || v.isEmpty) ? 'Required' : null
+                : null),
       ),
     );
   }
@@ -239,6 +317,7 @@ class _AccountSetupScreenState extends State<AccountSetupScreen> {
     _authUsername.dispose();
     _password.dispose();
     _domain.dispose();
+    _sipPort.dispose();
     _wsUrl.dispose();
     _displayName.dispose();
     super.dispose();

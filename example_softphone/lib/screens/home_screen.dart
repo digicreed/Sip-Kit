@@ -20,12 +20,7 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   int _selectedIndex = 0;
 
-  static const _labels = [
-    'Accounts',
-    'Dialer',
-    'Calls',
-    'Log',
-  ];
+  static const _labels = ['Accounts', 'Dialer', 'Calls', 'Log'];
 
   static const _icons = [
     Icons.people,
@@ -35,11 +30,11 @@ class _HomeScreenState extends State<HomeScreen> {
   ];
 
   List<Widget> _screens() => [
-        const AccountSetupScreen(),
-        const DialerScreen(),
-        const ActiveCallsScreen(),
-        const EventLogScreen(),
-      ];
+    const AccountSetupScreen(),
+    const DialerScreen(),
+    const ActiveCallsScreen(),
+    const EventLogScreen(),
+  ];
 
   @override
   Widget build(BuildContext context) {
@@ -55,29 +50,35 @@ class _HomeScreenState extends State<HomeScreen> {
               _EntitlementChip(entitlement: state.entitlement),
               const SizedBox(width: 4),
               IconButton(
-                icon: Icon(state.useWebrtcEngine
-                    ? Icons.web_rounded
-                    : Icons.phone_android),
-                tooltip: 'Engine: ${state.useWebrtcEngine ? "WebRTC" : "PJSIP"}',
+                icon: Icon(
+                  state.useWebrtcEngine
+                      ? Icons.web_rounded
+                      : Icons.phone_android,
+                ),
+                tooltip:
+                    'Engine: ${state.useWebrtcEngine ? "WebRTC" : "PJSIP"}',
                 onPressed: () async {
                   final confirmed = await showDialog<bool>(
                     context: context,
                     builder: (_) => AlertDialog(
                       title: const Text('Switch engine?'),
                       content: const Text(
-                          'This will disconnect all accounts and calls.'),
+                        'This will disconnect all accounts and calls.',
+                      ),
                       actions: [
                         TextButton(
-                            onPressed: () => Navigator.pop(context, false),
-                            child: const Text('Cancel')),
+                          onPressed: () => Navigator.pop(context, false),
+                          child: const Text('Cancel'),
+                        ),
                         FilledButton(
-                            onPressed: () => Navigator.pop(context, true),
-                            child: const Text('Switch')),
+                          onPressed: () => Navigator.pop(context, true),
+                          child: const Text('Switch'),
+                        ),
                       ],
                     ),
                   );
                   if (confirmed == true && context.mounted) {
-                    context.read<SoftphoneState>().toggleEngine();
+                    await context.read<SoftphoneState>().toggleEngine();
                   }
                 },
               ),
@@ -97,17 +98,18 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           floatingActionButton: state.calls.length >= 2
               ? FloatingActionButton.extended(
-                  onPressed: () => context.read<SoftphoneState>().mergeActiveCalls(),
+                  onPressed: () =>
+                      context.read<SoftphoneState>().mergeActiveCalls(),
                   icon: const Icon(Icons.call_merge),
                   label: const Text('Conference'),
-                  backgroundColor: state.entitlement?.hasFeature('conference') == true
+                  backgroundColor:
+                      state.entitlement?.hasFeature('conference') == true
                       ? null
                       : Colors.grey,
                 )
               : null,
         ),
-        if (hasIncoming)
-          IncomingCallOverlay(call: state.incomingCalls.first),
+        if (hasIncoming) IncomingCallOverlay(call: state.incomingCalls.first),
       ],
     );
   }
@@ -135,8 +137,7 @@ class _EntitlementChip extends StatelessWidget {
           fontWeight: FontWeight.bold,
         ),
       ),
-      backgroundColor:
-          expired ? Colors.orange[50] : Colors.green[50],
+      backgroundColor: expired ? Colors.orange[50] : Colors.green[50],
       side: BorderSide(color: expired ? Colors.orange : Colors.green),
       padding: EdgeInsets.zero,
     );

@@ -16,9 +16,10 @@ class SoftphoneState extends ChangeNotifier {
   }
 
   // ─── Engine selection ──────────────────────────────────────────────────────
-  bool useWebrtcEngine = true;
-  SipEngine _buildEngine() =>
-      useWebrtcEngine ? WebrtcEngine() : PjsipEngine();
+  // The provider-facing mobile example is native SIP first. WebRTC remains
+  // available through the app-bar toggle for providers that require WSS.
+  bool useWebrtcEngine = false;
+  SipEngine _buildEngine() => useWebrtcEngine ? WebrtcEngine() : PjsipEngine();
 
   late SipKitClient _client;
   final _storage = const FlutterSecureStorage();
@@ -73,7 +74,8 @@ class SoftphoneState extends ChangeNotifier {
       } catch (_) {
         // Skip individual accounts that fail (e.g. entitlement limit changed).
         _addLog(
-            'Could not restore account ${config.username}@${config.domain}');
+          'Could not restore account ${config.username}@${config.domain}',
+        );
       }
     }
     if (configs.isNotEmpty) {
@@ -154,8 +156,10 @@ class SoftphoneState extends ChangeNotifier {
     _incomingCallQueue.clear();
     _subscribeClient();
     _addLog(
-        'Engine switched to ${useWebrtcEngine ? "WebrtcEngine" : "PjsipEngine"}');
+      'Engine switched to ${useWebrtcEngine ? "WebrtcEngine" : "PjsipEngine"}',
+    );
     notifyListeners();
+    await _restoreSession();
   }
 
   // ─── Accounts ──────────────────────────────────────────────────────────────
@@ -164,53 +168,68 @@ class SoftphoneState extends ChangeNotifier {
   Future<void> saveAccount(SipKitAccountConfig config) async {
     final existing = await _loadSavedAccountConfigs();
     final updated = existing
-        .where((c) =>
-            c['username'] != config.username || c['domain'] != config.domain)
+        .where(
+          (c) =>
+              c['username'] != config.username || c['domain'] != config.domain,
+        )
         .toList();
     updated.add(_configToMap(config));
-    await _storage.write(
-        key: _kAccountsStorageKey, value: jsonEncode(updated));
+    await _storage.write(key: _kAccountsStorageKey, value: jsonEncode(updated));
   }
 
   /// Return all account configs that were persisted across sessions.
   Future<List<SipKitAccountConfig>> loadSavedAccountConfigs() async {
     return (await _loadSavedAccountConfigs())
+        .where(_belongsToCurrentEngine)
         .map(_configFromMap)
         .whereType<SipKitAccountConfig>()
         .toList();
+  }
+
+  bool _belongsToCurrentEngine(Map<String, dynamic> stored) {
+    final savedEngine = stored['engine'];
+    if (savedEngine is String) {
+      return savedEngine == (useWebrtcEngine ? 'webrtc' : 'pjsip');
+    }
+
+    // Legacy records predate explicit engine persistence. A non-empty WSS URL
+    // identifies a WebRTC account; native records have no WSS URL.
+    final wsUrl = stored['wsUrl'];
+    final isLegacyWebrtc = wsUrl is String && wsUrl.trim().isNotEmpty;
+    return useWebrtcEngine ? isLegacyWebrtc : !isLegacyWebrtc;
   }
 
   Future<List<Map<String, dynamic>>> _loadSavedAccountConfigs() async {
     final raw = await _storage.read(key: _kAccountsStorageKey);
     if (raw == null) return [];
     try {
-      return (jsonDecode(raw) as List)
-          .cast<Map<String, dynamic>>();
+      return (jsonDecode(raw) as List).cast<Map<String, dynamic>>();
     } catch (_) {
       return [];
     }
   }
 
-  static Map<String, dynamic> _configToMap(SipKitAccountConfig c) => {
-        'username': c.username,
-        'password': c.password,
-        'domain': c.domain,
-        'wsUrl': c.wsUrl,
-        'registrar': c.registrar,
-        'sipPort': c.sipPort,
-        'transport': c.transport.name,
-        'outboundProxy': c.outboundProxy,
-        'verifyTls': c.verifyTls,
-        'tlsCaCertPath': c.tlsCaCertPath,
-        'codecPreferences': c.codecPreferences,
-        'keepAliveInterval': c.keepAliveInterval,
-        'displayName': c.displayName,
-        'authUsername': c.authUsername,
-        'iceServers': c.iceServers.map((server) => server.toMap()).toList(),
-        'registerOnAdd': c.registerOnAdd,
-        'registrationExpiry': c.registrationExpiry,
-        'userAgent': c.userAgent,
-      };
+  Map<String, dynamic> _configToMap(SipKitAccountConfig c) => {
+    'engine': useWebrtcEngine ? 'webrtc' : 'pjsip',
+    'username': c.username,
+    'password': c.password,
+    'domain': c.domain,
+    'wsUrl': c.wsUrl,
+    'registrar': c.registrar,
+    'sipPort': c.sipPort,
+    'transport': c.transport.name,
+    'outboundProxy': c.outboundProxy,
+    'verifyTls': c.verifyTls,
+    'tlsCaCertPath': c.tlsCaCertPath,
+    'codecPreferences': c.codecPreferences,
+    'keepAliveInterval': c.keepAliveInterval,
+    'displayName': c.displayName,
+    'authUsername': c.authUsername,
+    'iceServers': c.iceServers.map((server) => server.toMap()).toList(),
+    'registerOnAdd': c.registerOnAdd,
+    'registrationExpiry': c.registrationExpiry,
+    'userAgent': c.userAgent,
+  };
 
   static SipKitAccountConfig? _configFromMap(Map<String, dynamic> m) {
     try {
@@ -222,18 +241,18 @@ class SoftphoneState extends ChangeNotifier {
       final rawIceServers = m['iceServers'];
       final iceServers = rawIceServers is List
           ? rawIceServers
-              .whereType<Map>()
-              .map((server) {
-                final url = server['url'];
-                if (url is! String || url.isEmpty) return null;
-                return IceServer(
-                  url: url,
-                  username: server['username'] as String?,
-                  credential: server['credential'] as String?,
-                );
-              })
-              .whereType<IceServer>()
-              .toList()
+                .whereType<Map>()
+                .map((server) {
+                  final url = server['url'];
+                  if (url is! String || url.isEmpty) return null;
+                  return IceServer(
+                    url: url,
+                    username: server['username'] as String?,
+                    credential: server['credential'] as String?,
+                  );
+                })
+                .whereType<IceServer>()
+                .toList()
           : const <IceServer>[];
       return SipKitAccountConfig(
         username: m['username'] as String,
@@ -298,6 +317,22 @@ class SoftphoneState extends ChangeNotifier {
   }
 
   Future<void> removeAccount(String accountId) async {
+    SipKitAccount? account;
+    for (final candidate in _client.accounts) {
+      if (candidate.id == accountId) {
+        account = candidate;
+        break;
+      }
+    }
+    if (account != null) {
+      final saved = await _loadSavedAccountConfigs();
+      saved.removeWhere(
+        (entry) =>
+            entry['username'] == account.config.username &&
+            entry['domain'] == account.config.domain,
+      );
+      await _storage.write(key: _kAccountsStorageKey, value: jsonEncode(saved));
+    }
     await _client.removeAccount(accountId);
     _addLog('Account $accountId removed');
     notifyListeners();
@@ -330,7 +365,8 @@ class SoftphoneState extends ChangeNotifier {
     try {
       final conf = await _client.mergeCalls(ids);
       _addLog(
-          'Conference ${conf.id} created with ${conf.callIds.length} calls');
+        'Conference ${conf.id} created with ${conf.callIds.length} calls',
+      );
       notifyListeners();
     } on ConferenceNotEntitledError catch (e) {
       _addLog('Conference not entitled: ${e.message}');
