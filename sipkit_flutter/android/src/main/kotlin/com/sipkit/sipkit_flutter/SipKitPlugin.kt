@@ -121,9 +121,15 @@ class SipKitPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, ActivityAwa
     private fun ensurePhoneAccountRegistered() {
         if (!hasTelecomPermission()) return
         val manager = context.getSystemService(Context.TELECOM_SERVICE) as TelecomManager
-        if (manager.getPhoneAccount(phoneAccountHandle()) == null)
-            manager.registerPhoneAccount(PhoneAccount.builder(phoneAccountHandle(), "SipKit")
-                .setCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER).build())
+        // Do not call getPhoneAccount() here. On some Android releases that
+        // lookup requires READ_PHONE_NUMBERS even for a self-managed VoIP
+        // provider. Re-registering the same handle is idempotent and only
+        // requires MANAGE_OWN_CALLS, which is the permission this plugin owns.
+        manager.registerPhoneAccount(
+            PhoneAccount.builder(phoneAccountHandle(), "SipKit")
+                .setCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER)
+                .build(),
+        )
     }
     private fun phoneAccountHandle() = PhoneAccountHandle(ComponentName(context, SipKitConnectionService::class.java), "SipKit")
     private fun hasTelecomPermission() = Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||

@@ -1,1 +1,2 @@
 - [Provider diagnostic safety](provider-diagnostic-safety.md) — controlled-call reports wait for termination, and auth-shaped evidence is redacted fail-closed.
+- [Android Telecom lookup permissions](android-telecom-permissions.md) — avoid getPhoneAccount lookups; some Android releases require READ_PHONE_NUMBERS for self-managed VoIP flows.

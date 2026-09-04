@@ -168,13 +168,13 @@ class SipKitFirebaseMessagingService : FirebaseMessagingService() {
         handle: PhoneAccountHandle,
     ) {
         try {
-            @Suppress("MissingPermission")
-            if (telecomManager.getPhoneAccount(handle) == null) {
-                val account = PhoneAccount.builder(handle, "SipKit")
-                    .setCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER)
-                    .build()
-                telecomManager.registerPhoneAccount(account)
-            }
+            // Avoid getPhoneAccount(): some Android releases gate that lookup
+            // behind READ_PHONE_NUMBERS. Re-registering the same VoIP handle
+            // is idempotent and only needs MANAGE_OWN_CALLS.
+            val account = PhoneAccount.builder(handle, "SipKit")
+                .setCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER)
+                .build()
+            telecomManager.registerPhoneAccount(account)
         } catch (e: Exception) {
             android.util.Log.e("SipKitFCM", "Phone account registration failed: ${e.message}")
         }
