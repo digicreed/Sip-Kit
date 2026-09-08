@@ -15,27 +15,19 @@ is rejected rather than silently used.
 
 Run commands from the `sipkit_flutter` directory.
 
+For a concise app-developer checklist covering native build, Flutter rebuild,
+installation, provider configuration, and acceptance tests, see
+[`ANDROID_TLS_HANDOFF.md`](ANDROID_TLS_HANDOFF.md).
+
 ### Android
 
-Install Git, GNU make, `zip`, a JDK (`jar`), an Android NDK, and static OpenSSL
-builds for every packaged ABI. Point `ANDROID_NDK_HOME` (or
-`ANDROID_NDK_ROOT`) at the NDK directory that contains `ndk-build`.
-
-Arrange `OPENSSL_ANDROID_ROOT` as:
-
-```text
-android-openssl/
-  arm64-v8a/{include/openssl,lib/libssl.a,lib/libcrypto.a}
-  armeabi-v7a/{include/openssl,lib/libssl.a,lib/libcrypto.a}
-  x86_64/{include/openssl,lib/libssl.a,lib/libcrypto.a}
-```
-
-Then run:
+Install Git, GNU make, Perl, `zip`, SWIG, a JDK, and an Android NDK. Point
+`ANDROID_NDK_HOME` (or `ANDROID_NDK_ROOT`) at the NDK directory that contains
+`ndk-build`, then run the complete TLS build:
 
 ```sh
 export ANDROID_NDK_HOME=/opt/android-ndk
-export OPENSSL_ANDROID_ROOT=/opt/android-openssl
-./tool/build_android_pjsua2_aar.sh
+./tool/build_android_tls_aar.sh
 ```
 
 The output is `android/libs/pjsua2-2.14.aar`, the path consumed by this
@@ -48,12 +40,30 @@ of PJSIP shared libraries. Installing this artifact activates SipKit's
 built-in Android native bridge; a consuming application must not provide its
 own Java/Kotlin JNI bridge.
 
-The build checks pjproject's configure output for `SSL support enabled` for
-every ABI and fails otherwise. This is required because PJSUA2 still exposes
-the TLS enum when the native library was built without SSL, but attempting to
-create that transport fails at runtime with `PJSIP_EUNSUPTRANSPORT`. Preserve
-the OpenSSL license and corresponding source alongside the GPL native source
-package distributed with the application.
+The wrapper builds pinned OpenSSL 3.0.4 static libraries for `arm64-v8a`,
+`armeabi-v7a`, and `x86_64`, then builds PJSUA2 and verifies the AAR. Set
+`ANDROID_API` to override the default API level 24, `JOBS` to control build
+parallelism, or `OPENSSL_ANDROID_ROOT` to choose the OpenSSL output directory.
+
+The PJSUA2 build checks pjproject's configure output for `SSL support enabled`
+for every ABI and fails otherwise. This is required because PJSUA2 still
+exposes the TLS enum when the native library was built without SSL, but
+attempting to create that transport fails with `PJSIP_EUNSUPTRANSPORT`.
+The generated AAR includes the OpenSSL license. Preserve the pinned OpenSSL
+source alongside the GPL native corresponding-source package distributed with
+the application.
+
+To use already-built OpenSSL libraries instead, arrange
+`OPENSSL_ANDROID_ROOT` as below and run
+`tool/build_android_pjsua2_aar.sh` directly:
+
+```text
+android-openssl/
+  LICENSE.txt
+  arm64-v8a/{include/openssl,lib/libssl.a,lib/libcrypto.a}
+  armeabi-v7a/{include/openssl,lib/libssl.a,lib/libcrypto.a}
+  x86_64/{include/openssl,lib/libssl.a,lib/libcrypto.a}
+```
 
 After building, verify the archive contents and ELF ABI labels:
 

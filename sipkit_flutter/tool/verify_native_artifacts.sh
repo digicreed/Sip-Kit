@@ -49,6 +49,7 @@ verify_android() {
     classes.jar \
     META-INF/PJPROJECT-GPL-NOTICE.md \
     META-INF/GPL-2.0.txt \
+    META-INF/OPENSSL-LICENSE.txt \
     jni/arm64-v8a/libpjsua2.so \
     jni/arm64-v8a/libc++_shared.so \
     jni/armeabi-v7a/libpjsua2.so \
@@ -91,7 +92,7 @@ verify_android() {
     printf '  %-12s %s\n' "$abi" "$native_info"
   done
   echo "  bindings: org.pjsip.pjsua2 present"
-  echo "  GPL notices: present"
+  echo "  GPL/OpenSSL notices: present"
 }
 
 verify_ios() {

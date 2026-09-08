@@ -228,12 +228,10 @@ abort if the checkout is different.
 From `sipkit_flutter/`:
 
 ```sh
-# Android: provide an installed NDK and per-ABI static OpenSSL builds.
-# OPENSSL_ANDROID_ROOT must contain arm64-v8a/, armeabi-v7a/, and x86_64/;
-# each subdirectory contains include/openssl/ plus lib/libssl.a and lib/libcrypto.a.
+# Android: provide an installed NDK; this builds pinned OpenSSL for all ABIs,
+# builds the TLS-enabled PJSUA2 AAR, and verifies the result.
 export ANDROID_NDK_HOME=/absolute/path/to/android-ndk
-export OPENSSL_ANDROID_ROOT=/absolute/path/to/android-openssl
-./tool/build_android_pjsua2_aar.sh
+./tool/build_android_tls_aar.sh
 
 # macOS/Xcode only: produces ios/Frameworks/PJSIP.xcframework
 ./tool/build_ios_pjsua2_xcframework.sh

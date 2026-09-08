@@ -12,6 +12,8 @@ ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}"
 OPENSSL_ANDROID_ROOT="${OPENSSL_ANDROID_ROOT:-}"
 [[ -n "$OPENSSL_ANDROID_ROOT" && -d "$OPENSSL_ANDROID_ROOT" ]] ||
   die "OPENSSL_ANDROID_ROOT must contain Android OpenSSL builds in ABI-named subdirectories."
+[[ -f "$OPENSSL_ANDROID_ROOT/LICENSE.txt" ]] ||
+  die "OpenSSL license not found: $OPENSSL_ANDROID_ROOT/LICENSE.txt"
 require_command make "Install make (for example, Xcode command-line tools or build-essential)."
 require_command zip "Install zip to assemble the AAR."
 require_command jar "Install a JDK; jar is required to create classes.jar."
@@ -29,6 +31,7 @@ mkdir -p "$(dirname "$OUTPUT")" "$work/jni" "$work/classes" "$work/META-INF"
 printf '<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.pjsip.pjsua2"/>\n' > "$work/AndroidManifest.xml"
 cp "$PACKAGE_DIR/LICENSES/PJPROJECT-GPL-NOTICE.md" "$work/META-INF/"
 cp "$SOURCE_DIR/COPYING" "$work/META-INF/GPL-2.0.txt"
+cp "$OPENSSL_ANDROID_ROOT/LICENSE.txt" "$work/META-INF/OPENSSL-LICENSE.txt"
 
 for abi in "${ABIS[@]}"; do
   openssl_root="$OPENSSL_ANDROID_ROOT/$abi"
